@@ -216,17 +216,17 @@ func (s *Session) HandleFrame(ctx context.Context, f hub.Frame) error {
 	return nil
 }
 
-// Close kills the shell process and closes the PTY.
+// Close kills the shell process and all its children, then closes the PTY.
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
-		// Kill the process group to ensure all children are cleaned up.
 		if s.cmd.Process != nil {
-			// Send SIGHUP first for graceful shutdown, then SIGKILL.
-			s.cmd.Process.Signal(syscall.SIGHUP) //nolint:errcheck
+			// Kill the entire process group (negative PID targets the group).
+			// This ensures children like btop/vim/etc. are also terminated.
+			syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck
 		}
 		s.ptmx.Close()
-		// Wait for the process to avoid zombie.
+		// Wait for the process to avoid zombies.
 		s.cmd.Wait() //nolint:errcheck
 	})
 }
