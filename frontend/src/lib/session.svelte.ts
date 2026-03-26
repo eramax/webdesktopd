@@ -10,6 +10,8 @@ class SessionStore {
   username = $state<string | null>(null);
   client = $state<WSClient | null>(null);
   connected = $state(false);
+  /** Increments on every successful WebSocket open (first connect + every reconnect). */
+  connectCount = $state(0);
   ptyChannels = $state<PTYChannel[]>([]);
   activeChannel = $state<number | null>(null);
 
@@ -22,6 +24,7 @@ class SessionStore {
     const ws = new WSClient(token);
     ws.onOpen = () => {
       this.connected = true;
+      this.connectCount++;
     };
     ws.onClose = () => {
       this.connected = false;
@@ -35,6 +38,7 @@ class SessionStore {
     this.token = null;
     this.username = null;
     this.connected = false;
+    this.connectCount = 0;
     this.ptyChannels = [];
     this.activeChannel = null;
     this._nextID = 1;

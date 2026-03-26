@@ -171,7 +171,7 @@
             class="flex-1 overflow-hidden"
             style="display: {session.activeChannel === ch.chanID ? 'flex' : 'none'}; flex-direction: column;"
           >
-            <Terminal chanID={ch.chanID} client={session.client} />
+            <Terminal chanID={ch.chanID} client={session.client} connectCount={session.connectCount} />
           </div>
         {/each}
       {:else}

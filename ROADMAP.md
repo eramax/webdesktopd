@@ -42,20 +42,20 @@
 
 ---
 
-## Phase 2 – Reconnection + Multi-tab
+## Phase 2 – Reconnection + Multi-tab ✅ COMPLETE
 
-- [ ] Multi-tab: open/close PTY via `0x0A`/`0x0B`, vertical tab list in frontend
-- [ ] Reconnect: on new WS, replay ring buffer tail → live stream
-- [ ] Session sync frame `0x0C` on reconnect (channel list + desktop state)
+- [x] Multi-tab: open/close PTY via `0x0A`/`0x0B`, vertical tab list in frontend
+- [x] Reconnect: on new WS, replay ring buffer tail → live stream
+- [x] Session sync frame `0x0C` on reconnect (channel list + desktop state)
 
 ---
 
-## Phase 3 – Stats Dock
+## Phase 3 – Stats Dock ✅ COMPLETE
 
-- [ ] `internal/stats` – `/proc` metrics collector (CPU, RAM, disk, net)
-- [ ] Ref-counted: starts on first UserSession, stops on last
-- [ ] Stats frame `0x03` on channel 0 every 1s
-- [ ] Frontend dock component (CPU/RAM/disk/net bars + kernel/uptime)
+- [x] `internal/stats` – `/proc` metrics collector (CPU, RAM, disk, net)
+- [x] Ref-counted: starts on first UserSession, stops on last
+- [x] Stats frame `0x03` on channel 0 every 1s
+- [x] Frontend dock component (CPU/RAM/disk/net bars + kernel/uptime)
 
 ---
 
@@ -127,3 +127,20 @@
 - e2e reconnect test updated: explicitly sends `openPTY` to trigger ring buffer replay
 - e2e reconnect test: cleans up stale PTY at start to avoid inter-run contamination
 - All 25 e2e tests pass
+
+### Session 3 (2026-03-27)
+- Implemented Phase 2 reconnection + multi-tab completion:
+  - `session.svelte.ts`: added `connectCount` state (increments on every WS open)
+  - `Terminal.svelte`: split single `$effect` into init effect (create xterm, register handler) and reconnect effect (send openPTY when connected+ready)
+  - `desktop/+page.svelte`: passes `connectCount` prop to Terminal component
+- Reconnect flow: WS auto-reconnects after 2s → `connectCount` increments → reconnect effect fires → `openPTY` re-sent → server re-attaches PTY and replays ring buffer → live streaming resumes
+- Known limitation: ring buffer replay on reconnect shows output from ring buffer start (may include pre-disconnect content); deduplication deferred to Phase 6
+
+### Session 4 (2026-03-27)
+- Implemented Phase 3 stats dock (backend):
+  - `internal/stats/collector.go`: ref-counted `Collector` reads `/proc/stat` (CPU), `/proc/meminfo` (RAM), `syscall.Statfs("/")` (disk), `/proc/net/dev` (net rates), `/proc/uptime`, `/proc/loadavg`, `syscall.Uname` (kernel), `os.Hostname`
+  - Broadcasts `FrameStats` (0x03) on chanID 0 every 1s to all registered senders
+  - Starts on first WS connect, stops when last client disconnects
+  - `server.go`: added `stats.Collector` to `Server`; `handleWS` calls `Add`/`Remove` (deferred)
+  - 3 unit tests pass (start/stop lifecycle, payload validation, multiple senders)
+  - Frontend `StatsDock.svelte` was already complete (Phase 1)

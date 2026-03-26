@@ -5,31 +5,43 @@
   interface Props {
     chanID: number;
     client: WSClient;
+    /** Increments on every WS open (first connect + every reconnect). */
+    connectCount: number;
   }
 
-  let { chanID, client }: Props = $props();
+  let { chanID, client, connectCount }: Props = $props();
 
   let containerEl = $state<HTMLDivElement | undefined>(undefined);
 
+  /**
+   * Set by the init effect once xterm is ready; cleared on cleanup.
+   * The reconnect effect reads this to know when it can send openPTY.
+   */
+  let termRef = $state<{
+    term: import('@xterm/xterm').Terminal;
+    fitAddon: import('@xterm/addon-fit').FitAddon;
+  } | null>(null);
+
+  /**
+   * Init effect: creates the xterm.js terminal, registers the data handler,
+   * and observes container size. Runs when chanID, client, or container changes.
+   * Does NOT send openPTY — that is handled by the reconnect effect below.
+   */
   $effect(() => {
-    // Re-run when chanID or client changes.
     const _chanID = chanID;
     const _client = client;
     const _container = containerEl;
 
     if (!_container) return;
 
-    let term: import('@xterm/xterm').Terminal | undefined;
-    let fitAddon: import('@xterm/addon-fit').FitAddon | undefined;
     let resizeObserver: ResizeObserver | undefined;
 
-    // Dynamic import so xterm.js is only loaded client-side.
     async function init() {
       const { Terminal } = await import('@xterm/xterm');
       const { FitAddon } = await import('@xterm/addon-fit');
       await import('@xterm/xterm/css/xterm.css');
 
-      term = new Terminal({
+      const term = new Terminal({
         theme: {
           background: '#000000',
           foreground: '#ffffff',
@@ -58,13 +70,13 @@
         scrollback: 5000,
       });
 
-      fitAddon = new FitAddon();
+      const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
-      term.open(_container);
+      term.open(_container!);
       fitAddon.fit();
       term.focus();
 
-      // Send terminal output to the server as Data frames
+      // Send keyboard input to server as Data frames.
       term.onData((data: string) => {
         const encoded = new TextEncoder().encode(data);
         _client.send({
@@ -74,45 +86,56 @@
         });
       });
 
-      // Notify server of terminal size changes
+      // Notify server of terminal size changes.
       term.onResize(({ cols, rows }: { cols: number; rows: number }) => {
         _client.resizePTY(_chanID, cols, rows);
       });
 
-      // Capture current dimensions. Resize frames sent before openPTY are
-      // dropped (no server handler yet), so we pass dims inside the openPTY
-      // payload so the server can set the initial PTY size immediately.
-      const dims = fitAddon.proposeDimensions();
-
-      // Receive data from server — register BEFORE sending openPTY so no
-      // output is missed (server sends ring buffer replay immediately on open).
+      // Receive data from server — register BEFORE setting termRef so the
+      // reconnect effect cannot send openPTY before the handler is ready.
       _client.register(_chanID, (frame) => {
         if (frame.type === FrameType.Data) {
-          term?.write(frame.payload);
+          term.write(frame.payload);
         }
       });
 
-      // Request the PTY from the server (or re-attach if it already exists),
-      // including the initial terminal dimensions.
-      _client.openPTY(_chanID, undefined, undefined, dims?.cols, dims?.rows);
+      // Observe container size changes for auto-fit.
+      resizeObserver = new ResizeObserver(() => fitAddon.fit());
+      resizeObserver.observe(_container!);
 
-      // Observe container size changes for auto-fit
-      resizeObserver = new ResizeObserver(() => {
-        if (fitAddon && term) {
-          fitAddon.fit();
-        }
-      });
-      resizeObserver.observe(_container);
+      // Signal readiness. The reconnect effect fires once this is set.
+      termRef = { term, fitAddon };
     }
 
     init().catch((err) => console.error('[Terminal] init error:', err));
 
-    // Cleanup
     return () => {
       resizeObserver?.disconnect();
       _client.unregister(_chanID);
-      term?.dispose();
+      termRef?.term.dispose();
+      termRef = null;
     };
+  });
+
+  /**
+   * Reconnect effect: sends openPTY whenever the WebSocket (re)connects AND
+   * the terminal is ready. Fires on:
+   *   • first connect after init completes (termRef becomes non-null),
+   *   • every subsequent reconnect (connectCount increments while termRef is set).
+   *
+   * The server handles openPTY idempotently: creates a new PTY on first call,
+   * re-attaches and replays the ring buffer on subsequent calls.
+   */
+  $effect(() => {
+    const _count = connectCount;
+    const _ref = termRef;
+    const _client = client;
+    const _chanID = chanID;
+
+    if (_count === 0 || !_ref) return;
+
+    const dims = _ref.fitAddon.proposeDimensions();
+    _client.openPTY(_chanID, undefined, undefined, dims?.cols, dims?.rows);
   });
 </script>
 

@@ -13,6 +13,7 @@ import (
 	"webdesktopd/internal/auth"
 	"webdesktopd/internal/hub"
 	ptySession "webdesktopd/internal/pty"
+	"webdesktopd/internal/stats"
 )
 
 // Config holds server configuration.
@@ -111,6 +112,7 @@ type Server struct {
 	sessions sync.Map // string (username) → *UserSession
 	upgrader websocket.Upgrader
 	assets   http.FileSystem // embedded frontend (nil = no static serving)
+	stats    *stats.Collector
 }
 
 // New creates a new Server with the given configuration.
@@ -123,6 +125,7 @@ func New(cfg Config) *Server {
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
 		},
+		stats: stats.New(),
 	}
 }
 
@@ -290,6 +293,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	us := val.(*UserSession)
 
 	h := hub.New(conn)
+
+	// Register with the stats collector. The collector starts its loop on the
+	// first registration and stops when the last client disconnects.
+	statsID := s.stats.Add(h)
+	defer s.stats.Remove(statsID)
 
 	// Register the control handler on chanID 0.
 	ctrl := &controlHandler{
