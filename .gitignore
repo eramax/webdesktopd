@@ -1,0 +1,22 @@
+# Build output
+/webdesktopd
+/tmp/
+
+# Frontend build artifacts
+frontend/build/
+frontend/.svelte-kit/
+frontend/node_modules/
+
+# Go
+*.test
+*.out
+
+# Deploy temp binary
+/tmp/webdesktopd-deploy
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
