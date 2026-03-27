@@ -41,19 +41,19 @@ contents:
 
 # ── Lifecycle scripts ──────────────────────────────────────────────────────────
 scripts:
-  postinstall: packaging/postinstall.sh
-  preremove:   packaging/preremove.sh
+  post_install: packaging/postinstall.sh
+  pre_remove: packaging/preremove.sh
 
 # ── Debian-specific ────────────────────────────────────────────────────────────
 deb:
   fields:
     Depends: "libc6 (>= 2.17)"
   scripts:
-    postinstall: packaging/postinstall.sh
-    preremove:   packaging/preremove.sh
+    post_install: packaging/postinstall.sh
+    pre_remove: packaging/preremove.sh
 
 # ── Alpine-specific ────────────────────────────────────────────────────────────
 apk:
   scripts:
-    postinstall: packaging/postinstall.sh
-    preremove:   packaging/preremove.sh
+    post_install: packaging/postinstall.sh
+    pre_remove: packaging/preremove.sh
