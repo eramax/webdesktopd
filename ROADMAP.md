@@ -164,3 +164,17 @@
   - Deployment: `go run ./cmd/deploy --pass='max***'` → builds, SCPs, starts on build-server:18080
   - Tunnel: `go run ./cmd/tunnel --pass='max***'` → localhost:19080 → remote:18080
   - Full e2e run: 35 PASS, 6 SKIP (PTY), 0 FAIL
+
+### Session 6 (2026-03-27)
+- Fixed breadcrumb double-slash bug: separator changed from `/` to `›` so root crumb `/` is not visually doubled
+- Added progress toast overlay (`FileManager.svelte`):
+  - Upload toasts: created per file with progress bar (0→100%) fed from `Progress (0x07)` frames; auto-dismiss 1.5s after completion, 3s on error
+  - Op toasts: brief notifications for create folder, create file, delete, copy/move (paste), rename — auto-dismiss 2s
+  - Toast overlay rendered `absolute bottom-10 right-3` inside the file manager container (no z-index bleed to parent)
+- Full e2e run: 35 PASS, 6 SKIP (PTY), 0 FAIL
+
+### Session 7 (2026-03-27)
+- Fixed upload progress always showing 0%: server never sends `total` in Progress frames; client now tracks `uploadSizes` map (uploadID → file bytes) and computes % locally
+- Added directory upload: second hidden `<input webkitdirectory>` + "Dir" toolbar button; uses `file.webkitRelativePath` as dest path so full folder tree is preserved; `writeFileChunk` already calls `os.MkdirAll` so subdirs are created automatically
+- Made uploads concurrent: extracted `uploadSingleFile(file, destPath)`, `uploadFiles` now uses `Promise.all` over all files — multiple files upload in parallel with interleaved chunks
+- Full e2e run: 35 PASS, 6 SKIP (PTY), 0 FAIL

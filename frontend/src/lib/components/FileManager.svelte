@@ -30,6 +30,15 @@
     paths: string[];
   }
 
+  interface Toast {
+    id: string;
+    kind: 'op' | 'upload';
+    label: string;
+    progress?: number; // 0-100
+    done?: boolean;
+    error?: string;
+  }
+
   type IconKind = 'folder' | 'image' | 'video' | 'audio' | 'archive' | 'code' | 'pdf' | 'file';
 
   // ── State ─────────────────────────────────────────────────────────────────
@@ -48,6 +57,39 @@
   let lastSelected = $state<string | null>(null);
 
   let uploadInput = $state<HTMLInputElement | undefined>(undefined);
+  let uploadFolderInput = $state<HTMLInputElement | undefined>(undefined);
+  let toasts = $state<Toast[]>([]);
+
+  // ── Toast helpers ─────────────────────────────────────────────────────────
+
+  let _toastCounter = 0;
+  // uploadID (uuid) → toastID
+  const uploadToasts = new Map<string, string>();
+  // uploadID (uuid) → total file bytes (for progress %)
+  const uploadSizes = new Map<string, number>();
+
+  function addToast(t: Omit<Toast, 'id'>): string {
+    const id = String(++_toastCounter);
+    toasts = [...toasts, { ...t, id }];
+    return id;
+  }
+
+  function updateToast(id: string, patch: Partial<Omit<Toast, 'id'>>) {
+    toasts = toasts.map(t => t.id === id ? { ...t, ...patch } : t);
+  }
+
+  function dismissToast(id: string) {
+    toasts = toasts.filter(t => t.id !== id);
+  }
+
+  function autoDismiss(id: string, ms = 2000) {
+    setTimeout(() => dismissToast(id), ms);
+  }
+
+  function opToast(label: string) {
+    const id = addToast({ kind: 'op', label });
+    autoDismiss(id, 2000);
+  }
 
   // download id → accumulation state
   interface DownloadState {
@@ -159,6 +201,7 @@
     const name = prompt('Folder name:');
     if (!name?.trim()) return;
     fileOp('mkdir', join(currentPath, name.trim()));
+    opToast(`Created folder "${name.trim()}"`);
     setTimeout(() => requestList(currentPath), 200);
   }
 
@@ -166,6 +209,7 @@
     const name = prompt('File name:');
     if (!name?.trim()) return;
     fileOp('touch', join(currentPath, name.trim()));
+    opToast(`Created file "${name.trim()}"`);
     setTimeout(() => requestList(currentPath), 200);
   }
 
@@ -174,6 +218,7 @@
     const names = [...selected].join(', ');
     if (!confirm(`Delete ${selected.size} item(s)?\n${names}`)) return;
     for (const name of selected) fileOp('delete', abs(name));
+    opToast(`Deleted ${selected.size} item${selected.size !== 1 ? 's' : ''}`);
     selected = new Set();
     setTimeout(() => requestList(currentPath), 200);
   }
@@ -190,11 +235,14 @@
 
   function paste() {
     if (!clipboard) return;
+    const n = clipboard.paths.length;
+    const verb = clipboard.op === 'copy' ? 'Copied' : 'Moved';
     for (const srcPath of clipboard.paths) {
       const name = srcPath.split('/').pop() ?? '';
       const dst = join(currentPath, name);
       fileOp(clipboard.op === 'copy' ? 'copy' : 'rename', srcPath, dst);
     }
+    opToast(`${verb} ${n} item${n !== 1 ? 's' : ''}`);
     if (clipboard.op === 'cut') clipboard = null;
     setTimeout(() => requestList(currentPath), 300);
   }
@@ -205,6 +253,7 @@
       return;
     }
     fileOp('rename', abs(renamingName), abs(renameValue.trim()));
+    opToast(`Renamed "${renamingName}" → "${renameValue.trim()}"`);
     renamingName = null;
     setTimeout(() => requestList(currentPath), 200);
   }
@@ -221,33 +270,45 @@
 
   // ── Upload ────────────────────────────────────────────────────────────────
 
-  async function uploadFiles(files: FileList | File[]) {
-    const arr = Array.from(files);
-    for (const file of arr) {
-      // uploadID must be exactly 36 bytes (padded with spaces)
-      const rawID = crypto.randomUUID(); // already 36 chars
-      const idBytes = new TextEncoder().encode(rawID.padEnd(36).slice(0, 36));
-      const pathBytes = new TextEncoder().encode(join(currentPath, file.name));
-      const chunkSize = 64 * 1024;
-      const data = new Uint8Array(await file.arrayBuffer());
-      let offset = 0;
+  async function uploadSingleFile(file: File, destPath: string) {
+    // uploadID must be exactly 36 bytes (UUID is exactly 36 chars)
+    const rawID = crypto.randomUUID();
+    const idBytes = new TextEncoder().encode(rawID);
+    const tid = addToast({ kind: 'upload', label: file.name, progress: 0 });
+    uploadToasts.set(rawID, tid);
 
-      do {
-        const chunk = data.slice(offset, offset + chunkSize);
-        // Wire format: uploadID(36) | pathLen(2 BE) | path | offset(8 BE) | data
-        const payload = new Uint8Array(36 + 2 + pathBytes.length + 8 + chunk.length);
-        const dv = new DataView(payload.buffer);
-        payload.set(idBytes, 0);
-        dv.setUint16(36, pathBytes.length, false);
-        payload.set(pathBytes, 38);
-        dv.setUint32(38 + pathBytes.length, Math.floor(offset / 0x100000000), false);
-        dv.setUint32(38 + pathBytes.length + 4, offset >>> 0, false);
-        payload.set(chunk, 38 + pathBytes.length + 8);
-        client.send({ type: FrameType.FileUpload, chanID: 0, payload });
-        offset += chunk.length;
-        if (chunk.length > 0) await new Promise(r => setTimeout(r, 0));
-      } while (offset < data.length);
-    }
+    const data = new Uint8Array(await file.arrayBuffer());
+    uploadSizes.set(rawID, Math.max(data.length, 1));
+
+    const pathBytes = new TextEncoder().encode(destPath);
+    const chunkSize = 64 * 1024;
+    let offset = 0;
+
+    do {
+      const chunk = data.slice(offset, offset + chunkSize);
+      // Wire format: uploadID(36) | pathLen(2 BE) | path | offset(8 BE) | data
+      const payload = new Uint8Array(36 + 2 + pathBytes.length + 8 + chunk.length);
+      const dv = new DataView(payload.buffer);
+      payload.set(idBytes, 0);
+      dv.setUint16(36, pathBytes.length, false);
+      payload.set(pathBytes, 38);
+      dv.setUint32(38 + pathBytes.length, Math.floor(offset / 0x100000000), false);
+      dv.setUint32(38 + pathBytes.length + 4, offset >>> 0, false);
+      payload.set(chunk, 38 + pathBytes.length + 8);
+      client.send({ type: FrameType.FileUpload, chanID: 0, payload });
+      offset += chunk.length;
+      if (chunk.length > 0) await new Promise(r => setTimeout(r, 0));
+    } while (offset < data.length);
+  }
+
+  async function uploadFiles(files: FileList | File[], useRelativePath = false) {
+    const arr = Array.from(files);
+    await Promise.all(arr.map(file => {
+      const destPath = (useRelativePath && file.webkitRelativePath)
+        ? join(currentPath, file.webkitRelativePath)
+        : join(currentPath, file.name);
+      return uploadSingleFile(file, destPath);
+    }));
     setTimeout(() => requestList(currentPath), 400);
   }
 
@@ -353,6 +414,29 @@
       if (frame.type === FrameType.Progress) {
         try {
           const p = decodeJSON<{ id: string; bytesSent: number; total: number; error?: string }>(frame.payload);
+
+          // Upload progress toast
+          const uploadID = p.id.trim();
+          const tid = uploadToasts.get(uploadID);
+          if (tid) {
+            if (p.error) {
+              updateToast(tid, { error: p.error, done: true });
+              uploadToasts.delete(uploadID);
+              uploadSizes.delete(uploadID);
+              autoDismiss(tid, 3000);
+            } else {
+              const total = uploadSizes.get(uploadID) ?? 1;
+              const pct = Math.min(100, Math.round(p.bytesSent / total * 100));
+              updateToast(tid, { progress: pct });
+              if (p.bytesSent >= total) {
+                updateToast(tid, { done: true, progress: 100 });
+                uploadToasts.delete(uploadID);
+                uploadSizes.delete(uploadID);
+                autoDismiss(tid, 1500);
+              }
+            }
+          }
+
           const dl = downloads.get(p.id);
           if (!dl) return;
           if (p.error) { downloads.delete(p.id); return; }
@@ -385,7 +469,7 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
 <div
-  class="flex flex-col h-full bg-zinc-950 text-zinc-200 text-sm select-none outline-none"
+  class="relative flex flex-col h-full bg-zinc-950 text-zinc-200 text-sm select-none outline-none"
   tabindex="-1"
   role="region"
   aria-label="File Manager"
@@ -415,7 +499,7 @@
     <!-- Breadcrumbs -->
     <div class="flex items-center gap-0.5 flex-1 min-w-0 overflow-x-auto text-xs">
       {#each breadcrumbs as crumb, i}
-        {#if i > 0}<span class="text-zinc-600 mx-0.5">/</span>{/if}
+        {#if i > 0}<span class="text-zinc-600 mx-0.5">›</span>{/if}
         <button
           onclick={(e) => { e.stopPropagation(); navigate(crumb.path); }}
           class="px-1 py-0.5 rounded hover:bg-zinc-700 hover:text-white transition shrink-0
@@ -433,13 +517,22 @@
     <button onclick={(e) => { e.stopPropagation(); createFile(); }} title="New File" class="flex items-center gap-1 px-2 h-7 rounded text-zinc-400 text-xs hover:text-zinc-100 hover:bg-zinc-700 transition disabled:opacity-30 disabled:cursor-not-allowed">
       {@render iconFilePlus()} <span>File</span>
     </button>
-    <button onclick={(e) => { e.stopPropagation(); uploadInput?.click(); }} title="Upload" class="flex items-center gap-1 px-2 h-7 rounded text-zinc-400 text-xs hover:text-zinc-100 hover:bg-zinc-700 transition disabled:opacity-30 disabled:cursor-not-allowed">
+    <button onclick={(e) => { e.stopPropagation(); uploadInput?.click(); }} title="Upload files" class="flex items-center gap-1 px-2 h-7 rounded text-zinc-400 text-xs hover:text-zinc-100 hover:bg-zinc-700 transition disabled:opacity-30 disabled:cursor-not-allowed">
       {@render iconUpload()} <span>Upload</span>
+    </button>
+    <button onclick={(e) => { e.stopPropagation(); uploadFolderInput?.click(); }} title="Upload folder" class="flex items-center gap-1 px-2 h-7 rounded text-zinc-400 text-xs hover:text-zinc-100 hover:bg-zinc-700 transition disabled:opacity-30 disabled:cursor-not-allowed">
+      {@render iconFolderUpload()} <span>Dir</span>
     </button>
     <input
       type="file" multiple class="hidden"
       bind:this={uploadInput}
-      onchange={(e) => { if (e.currentTarget.files) uploadFiles(e.currentTarget.files); e.currentTarget.value=''; }}
+      onchange={(e) => { if (e.currentTarget.files) uploadFiles(e.currentTarget.files, false); e.currentTarget.value=''; }}
+    />
+    <input
+      type="file" multiple class="hidden"
+      bind:this={uploadFolderInput}
+      webkitdirectory
+      onchange={(e) => { if (e.currentTarget.files) uploadFiles(e.currentTarget.files, true); e.currentTarget.value=''; }}
     />
 
     {#if selected.size > 0}
@@ -599,6 +692,48 @@
       <button class="block w-full text-left px-4 py-1.5 text-red-400 text-sm hover:bg-zinc-700 hover:text-red-300 transition" onclick={() => { deleteSelected(); contextMenu=null; }}>Delete</button>
     </div>
   {/if}
+
+  <!-- ── Toast overlay ── -->
+  {#if toasts.length > 0}
+    <div class="absolute bottom-10 right-3 z-50 flex flex-col gap-1.5 pointer-events-none" style="max-width:280px">
+      {#each toasts as t (t.id)}
+        <div class="flex items-center gap-2 px-3 py-2 rounded-lg shadow-xl text-xs
+                    {t.error ? 'bg-red-900/90 border border-red-700' : t.done ? 'bg-zinc-700/90 border border-zinc-600' : 'bg-zinc-800/95 border border-zinc-700'}">
+          {#if t.kind === 'upload' && !t.done && !t.error}
+            <!-- circular progress ring with % in centre -->
+            <svg class="w-6 h-6 shrink-0" viewBox="0 0 24 24" fill="none" style="transform:rotate(-90deg)">
+              <circle cx="12" cy="12" r="9" stroke="#3f3f46" stroke-width="2.5"/>
+              <circle cx="12" cy="12" r="9" stroke="#60a5fa" stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-dasharray="56.55"
+                stroke-dashoffset="{56.55 * (1 - (t.progress ?? 0) / 100)}"/>
+              <text x="12" y="12" text-anchor="middle" dominant-baseline="central"
+                font-size="5" fill="white" stroke="none"
+                transform="rotate(90 12 12)">{t.progress ?? 0}%</text>
+            </svg>
+          {:else if t.error}
+            <svg class="w-3.5 h-3.5 shrink-0 text-red-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+          {:else}
+            <svg class="w-3.5 h-3.5 shrink-0 text-green-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          {/if}
+          <span class="truncate {t.error ? 'text-red-300' : 'text-zinc-200'}">
+            {#if t.kind === 'upload'}
+              {t.done ? 'Uploaded' : 'Uploading'}: {t.label}
+            {:else}
+              {t.label}
+            {/if}
+          </span>
+          {#if t.error}
+            <span class="text-red-400 shrink-0 truncate max-w-24">{t.error}</span>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <!-- ── Snippets ── -->
@@ -674,6 +809,9 @@
 {/snippet}
 {#snippet iconUpload()}
   <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>
+{/snippet}
+{#snippet iconFolderUpload()}
+  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><polyline points="16 13 12 9 8 13"/><line x1="12" y1="9" x2="12" y2="17"/></svg>
 {/snippet}
 {#snippet iconDownload()}
   <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>
