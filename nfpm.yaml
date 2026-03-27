@@ -39,21 +39,21 @@ contents:
     file_info:
       mode: 0640
 
-# ── Lifecycle scripts ──────────────────────────────────────────────────────────
+# ── Lifecycle scripts (deb/rpm only — apk does not support these hooks) ────────
 scripts:
-  post_install: packaging/postinstall.sh
-  pre_remove: packaging/preremove.sh
+  postinstall: packaging/postinstall.sh
+  preremove: packaging/preremove.sh
 
 # ── Debian-specific ────────────────────────────────────────────────────────────
 deb:
   fields:
     Depends: "libc6 (>= 2.17)"
   scripts:
-    post_install: packaging/postinstall.sh
-    pre_remove: packaging/preremove.sh
+    postinstall: packaging/postinstall.sh
+    preremove: packaging/preremove.sh
 
 # ── Alpine-specific ────────────────────────────────────────────────────────────
 apk:
   scripts:
-    post_install: packaging/postinstall.sh
-    pre_remove: packaging/preremove.sh
+    preupgrade: packaging/preupgrade.sh
+    postupgrade: packaging/postupgrade.sh
