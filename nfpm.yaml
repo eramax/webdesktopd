@@ -24,6 +24,8 @@ contents:
   - src: ./packaging/webdesktopd.service
     dst: /lib/systemd/system/webdesktopd.service
     packager: deb
+    file_info:
+      mode: 0644
 
   # OpenRC init script (Alpine)
   - src: ./packaging/webdesktopd.openrc
@@ -31,6 +33,12 @@ contents:
     packager: apk
     file_info:
       mode: 0755
+
+  # Config directory (both) — postinstall tightens ownership to root:webdesktopd
+  - dst: /etc/webdesktopd
+    type: dir
+    file_info:
+      mode: 0750
 
   # Default config (both)
   - src: ./packaging/webdesktopd.env
@@ -46,10 +54,8 @@ scripts:
 
 # ── Debian-specific ────────────────────────────────────────────────────────────
 deb:
-  fields:
-    Depends: "libc6 (>= 2.17)"
-  # deb.scripts only supports debconf fields: rules, templates, config
-  # lifecycle hooks (postinstall/preremove) go in the top-level scripts block
+  # No libc dependency — binary is fully statically linked (CGO_ENABLED=0).
+  # lifecycle hooks (postinstall/preremove) come from the top-level scripts block.
 
 # ── Alpine-specific ────────────────────────────────────────────────────────────
 apk: {}
