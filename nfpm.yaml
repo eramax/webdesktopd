@@ -1,0 +1,59 @@
+# nfpm package config — used by the release workflow to build .deb and .apk.
+# VERSION is injected as an env var by the workflow: export VERSION=x.y.z
+name: webdesktopd
+arch: amd64
+platform: linux
+version: ${VERSION}
+
+maintainer: "webdesktopd contributors"
+description: |
+  Persistent web desktop daemon.
+  Exposes a browser-based desktop per Unix user over HTTP/WebSocket —
+  real terminal, file manager, system stats dock, and port proxy.
+homepage: "https://github.com/emo/webdesktopd"
+license: MIT
+
+# ── Files ──────────────────────────────────────────────────────────────────────
+contents:
+  - src: ./dist/webdesktopd
+    dst: /usr/bin/webdesktopd
+    file_info:
+      mode: 0755
+
+  # systemd unit (Debian)
+  - src: ./packaging/webdesktopd.service
+    dst: /lib/systemd/system/webdesktopd.service
+    packager: deb
+
+  # OpenRC init script (Alpine)
+  - src: ./packaging/webdesktopd.openrc
+    dst: /etc/init.d/webdesktopd
+    packager: apk
+    file_info:
+      mode: 0755
+
+  # Default config (both)
+  - src: ./packaging/webdesktopd.env
+    dst: /etc/webdesktopd/env
+    type: config|noreplace
+    file_info:
+      mode: 0640
+
+# ── Lifecycle scripts ──────────────────────────────────────────────────────────
+scripts:
+  postinstall: packaging/postinstall.sh
+  preremove:   packaging/preremove.sh
+
+# ── Debian-specific ────────────────────────────────────────────────────────────
+deb:
+  fields:
+    Depends: "libc6 (>= 2.17)"
+  scripts:
+    postinstall: packaging/postinstall.sh
+    preremove:   packaging/preremove.sh
+
+# ── Alpine-specific ────────────────────────────────────────────────────────────
+apk:
+  scripts:
+    postinstall: packaging/postinstall.sh
+    preremove:   packaging/preremove.sh

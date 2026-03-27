@@ -1,0 +1,27 @@
+[Unit]
+Description=webdesktopd – persistent web desktop daemon
+Documentation=https://github.com/emo/webdesktopd
+After=network.target
+
+[Service]
+Type=simple
+User=webdesktopd
+Group=webdesktopd
+EnvironmentFile=-/etc/webdesktopd/env
+ExecStart=/usr/bin/webdesktopd
+Restart=on-failure
+RestartSec=5s
+
+# Drop all capabilities except setuid/setgid (needed to spawn shells as users).
+NoNewPrivileges=no
+AmbientCapabilities=CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+
+# Harden the service.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home
+
+[Install]
+WantedBy=multi-user.target

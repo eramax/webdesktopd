@@ -1,0 +1,16 @@
+#!/sbin/openrc-run
+
+description="webdesktopd – persistent web desktop daemon"
+command="/usr/bin/webdesktopd"
+command_user="webdesktopd:webdesktopd"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/webdesktopd.log"
+error_log="/var/log/webdesktopd.log"
+
+[ -f /etc/webdesktopd/env ] && . /etc/webdesktopd/env
+
+depend() {
+    need net
+    after firewall
+}

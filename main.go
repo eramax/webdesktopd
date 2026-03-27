@@ -14,6 +14,9 @@ import (
 	"webdesktopd/internal/server"
 )
 
+// Version is set at build time via -ldflags "-X main.Version=x.y.z".
+var Version = "dev"
+
 // frontendFS holds the compiled SvelteKit build.
 // The build directory is created by running `bun run build` in frontend/.
 // It is absent during `go test` runs; the embed tag is conditional so the
