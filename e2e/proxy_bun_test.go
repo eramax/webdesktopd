@@ -14,20 +14,49 @@ import (
 const bunServerPort = 19866
 
 // bunApp is the bun serve script sent to the remote.
-// It serves an HTML page on "/" and a JSON endpoint on "/api".
-// All responses include Connection: close so the TCP connection is
-// cleanly terminated after each response (required for the proxy read loop
-// to detect EOF and send the client a 0x10 close frame).
+// It handles several test routes used by multiple e2e test files:
+//
+//	/        – HTML page with "proxy-test-ok" marker (existing proxy tests)
+//	/api     – JSON {status,framework,port}            (existing proxy tests)
+//	/ws      – WebSocket echo server                   (proxy header/WS tests)
+//	/xfo     – response with X-Frame-Options: DENY     (proxy header/WS tests)
+//	/csp     – response with CSP frame-ancestors       (proxy header/WS tests)
+//	/cookies – echoes received Cookie header as JSON   (proxy header/WS tests)
+//
+// HTTP responses include Connection: close so the TCP read loop can detect
+// EOF and send the client a 0x10 CloseProxy frame.
 const bunApp = `
 const server = Bun.serve({
   port: %d,
-  fetch(req) {
+  fetch(req, server) {
     const url = new URL(req.url);
+    if (url.pathname === "/ws") {
+      if (server.upgrade(req)) return;
+      return new Response("upgrade failed", { status: 500 });
+    }
     if (url.pathname === "/api") {
       return Response.json(
         { status: "ok", framework: "bun", port: %d },
         { headers: { "Connection": "close" } }
       );
+    }
+    if (url.pathname === "/xfo") {
+      return new Response("xfo-test", {
+        headers: { "Content-Type": "text/plain", "X-Frame-Options": "DENY", "Connection": "close" },
+      });
+    }
+    if (url.pathname === "/csp") {
+      return new Response("csp-test", {
+        headers: {
+          "Content-Type": "text/plain",
+          "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'",
+          "Connection": "close",
+        },
+      });
+    }
+    if (url.pathname === "/cookies") {
+      const cookie = req.headers.get("cookie") ?? "";
+      return Response.json({ cookies: cookie }, { headers: { "Connection": "close" } });
     }
     return new Response(
       "<!DOCTYPE html><html><head><title>Bun Test App</title></head>" +
@@ -37,6 +66,9 @@ const server = Bun.serve({
       "</body></html>",
       { headers: { "Content-Type": "text/html", "Connection": "close" } }
     );
+  },
+  websocket: {
+    message(ws, msg) { ws.send(msg); },
   },
 });
 process.stdout.write("bun-ready:" + server.port + "\n");
