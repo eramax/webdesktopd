@@ -72,13 +72,16 @@
 
 ---
 
-## Phase 5 – Desktop State + Port Proxy
+## Phase 5 – Desktop State + Port Proxy ✅ COMPLETE
 
-- [ ] `internal/desktop` – read/write `~/.webdesktopd/state.json`
-- [ ] Frames `0x12`/`0x13` for push/save
-- [ ] Frontend: save window positions + wallpaper on change
-- [ ] Port proxy: `0x0F`/`0x10`, TCP tunnel over WS channel
-- [ ] Frontend: port proxy tab with Service Worker virtual host
+- [x] `internal/desktop` – `saveDesktopState`/`loadDesktopState` in `fileops.go`; `~/.webdesktopd/state.json`
+- [x] Frames `0x12`/`0x13` for push/save — `FrameDesktopPush`/`FrameDesktopSave` wired; state loaded on connect and included in `0x0C` session sync
+- [x] Frontend: wallpaper picker (6 presets), debounced `0x13` save on change; restored from session sync
+- [x] Port proxy: `0x0F`/`0x10`, TCP tunnel over WS channel — `PortProxySession` in `proxy.go`; `handleOpenProxy`/`handleCloseProxy` in controlHandler; proxy channels survive WS reconnect; session sync includes `proxyChannels`
+- [x] Frontend: `PortProxy.svelte` panel — port input, active proxy list, iframe view at `/_proxy/{port}/`; Service Worker at `/sw.js` intercepts `/_proxy/...` for HTTP tunneling
+- [x] HTTP proxy endpoint `/_proxy/{port}/{path}` (cookie auth `wdd_token`) via `httputil.ReverseProxy` for browser iframe use
+- [x] `ProxyChannels` + `DesktopState` added to `SessionSyncPayload`
+- [x] e2e — 5 new tests: desktop state save/load, multi-reconnect persistence, TCP proxy HTTP round-trip, unreachable target error, proxy in session sync
 
 ---
 
@@ -178,3 +181,56 @@
 - Added directory upload: second hidden `<input webkitdirectory>` + "Dir" toolbar button; uses `file.webkitRelativePath` as dest path so full folder tree is preserved; `writeFileChunk` already calls `os.MkdirAll` so subdirs are created automatically
 - Made uploads concurrent: extracted `uploadSingleFile(file, destPath)`, `uploadFiles` now uses `Promise.all` over all files — multiple files upload in parallel with interleaved chunks
 - Full e2e run: 35 PASS, 6 SKIP (PTY), 0 FAIL
+
+### Session 8 (2026-03-27)
+- Implemented Phase 5 – Desktop State + Port Proxy:
+  - Backend `proxy.go`: `PortProxySession` — dials TCP, relays `0x01` frames bidirectionally, sends `0x10` to client when TCP closes; `Attach`/`Detach` for hub lifecycle (mirrors PTY pattern)
+  - `server.go`: `ProxyInfo`, `ProxyChannels` + `DesktopState json.RawMessage` added to `SessionSyncPayload`; `UserSession.proxies` map + CRUD methods; `handleOpenProxy`/`handleCloseProxy` in controlHandler; desktop state loaded from `~/.webdesktopd/state.json` and embedded in every session sync; `/_proxy/{port}/{path}` HTTP reverse-proxy endpoint (cookie auth `wdd_token`)
+  - Frontend `session.svelte.ts`: `ProxyChannel` interface; `proxyChannels`, `activeProxyChanID`, `wallpaper` state; auth cookie set/clear on login/logout
+  - Frontend `desktop/+page.svelte`: wallpaper picker (6 colour presets) in top bar; debounced `0x13` DesktopSave on wallpaper change; handles `0x0C`/`0x12` to restore wallpaper + tab labels + proxy channels; SW registration + message handler for HTTP tunneling
+  - Frontend `PortProxy.svelte` (new): sidebar with port+label form, active proxy list, iframe at `/_proxy/{port}/`
+  - Frontend `Dock.svelte`: globe-icon proxy launcher; Proxy window button in running-windows strip
+  - `static/sw.js` (new): service worker intercepts `/_proxy/...` fetches, tunnels HTTP via MessageChannel to desktop page's WS
+  - e2e `client_test.go`: `sessionSyncResult` extended with `ProxyChannels`, `DesktopState`
+  - e2e `desktop_test.go` (new): 2 tests — save/load, multi-reconnect persistence
+  - e2e `proxy_test.go` (new): 3 tests — TCP HTTP round-trip (proxy to remote :18080), unreachable target error, proxy in session sync
+  - Note: proxy tests use webdesktopd:18080 as target (local echo server can't be reached from remote)
+- Full e2e run: 40 PASS, 6 SKIP (PTY), 0 FAIL
+
+### Session 9 (2026-03-27)
+- Added bun webserver e2e tests for proxy (`e2e/proxy_bun_test.go`):
+  - `startRemoteBunServer` helper: SSHes to remote (via `WEBDESKTOPD_SSH_ADDR`), writes a bun script, starts with `nohup`, polls log for ready signal, returns cleanup func that kills the process
+  - Bun app: serves HTML on `/` (`proxy-test-ok` marker + title) and JSON on `/api` (`{status,framework,port}`), all with `Connection: close` for clean TCP teardown
+  - `httpViaProxy` helper: opens WS proxy channel, sends raw HTTP/1.1 request, accumulates data frames until `0x10` CloseProxy, returns full response string
+  - `TestProxyBunWebServerHTML`: GET / → verify HTTP 200, `proxy-test-ok` in body, `text/html` content-type
+  - `TestProxyBunWebServerJSON`: GET /api → verify HTTP 200, `{status:ok,framework:bun}` JSON
+  - `TestProxyBunWebServerMultipleRequests`: 3 channels in sequence hitting `/` and `/api` — all return 200
+  - `setup_test.go`: added `SSHAddr` field to `testConfig`; populated from `WEBDESKTOPD_SSH_ADDR` env in all config paths
+  - Run with: add `WEBDESKTOPD_SSH_ADDR=127.0.0.1:32233` to e2e command
+- Full e2e run: 43 PASS, 6 SKIP (PTY), 0 FAIL
+
+### Session 10 (2026-03-27)
+- Redesigned port proxy UX: auto-discover listening ports instead of manual entry
+  - New frames `0x14` `FramePortScan` (C→S) / `0x15` `FramePortScanResp` (S→C)
+  - Backend `internal/server/portscan.go`: reads `/proc/net/tcp` + `/proc/net/tcp6` for LISTEN sockets, resolves PIDs via `/proc/*/fd/` symlinks, reads `comm`+`cmdline` for each PID; returns port-sorted `[]PortInfo{port,pid,process,cmdline}`
+  - `controlHandler.handlePortScan`: calls scanner, responds with `FramePortScanResp`
+  - `PortProxy.svelte` rewritten: scans on mount + polls every 4 s; shows port badge + process name + cmdline for each listener; click to open proxy (reuses existing channel if already open); active proxy sessions listed separately at bottom; no manual port input needed
+  - Fixed HTTP proxy iframe: `<base href="/_proxy/{port}/">` injected into HTML responses (fixes relative asset URLs); `Location` headers rewritten to stay within proxy path; `?_t=JWT` in iframe URL as reliable auth (cookie fallback kept)
+  - e2e `TestPortScanDiscoversBunServer`: starts bun, scan, verify port+process appear
+  - e2e `TestPortScanOpenAndLoadProxy`: scan → open proxy → load HTML via WS channel
+- Full e2e run: 45 PASS, 6 SKIP (PTY), 0 FAIL
+
+### Session 11 (2026-03-27)
+- Port proxy UX + correctness overhaul:
+  - **Single compact list**: one section showing all listening ports with `:port` badge + process name + cmdline; globe toggle icon opens/closes iframe; no separate "active proxies" section
+  - **HTTP REST endpoint only**: iframe loads `/_proxy/{port}/` directly — no `FrameOpenProxy` WS channel needed for HTTP use; WS TCP proxy (`0x0F`/`0x10`) preserved for raw TCP use cases
+  - **Cookie-only auth**: removed `?_t=TOKEN` URL injection; `wdd_token` cookie (set by desktop page at login, `SameSite=Lax; path=/`) is shared across all same-origin requests including iframe subrequests
+  - **Fix "loads forever"**: root cause was gzip — browser sends `Accept-Encoding: gzip`, upstream gzip-encodes response, `ModifyResponse` read compressed bytes and injected `<base>` tag into them. Fix: custom Director strips `Accept-Encoding` before forwarding so upstream always returns plain text; `Transfer-Encoding` header removed after body replace
+  - `PortProxy.svelte` simplified: local `activePort` state (no `session.proxyChannels` in UI), `registerBroadcast` for scan responses, polls every 4 s
+- Full e2e run: 45 PASS, 6 SKIP (PTY), 0 FAIL
+- Fixed HTTP proxy iframe for real web apps (`/_proxy/{port}/`):
+  - **Base tag injection**: `handleHTTPProxy` now reads HTML responses and injects `<base href="/_proxy/{port}/">` after `<head>` — fixes all relative asset URLs (`/assets/main.js`, `/style.css`, etc.) so they route through the proxy instead of 404ing on webdesktopd
+  - **Redirect rewriting**: `ModifyResponse` rewrites `Location` headers so server-side redirects stay within the `/_proxy/{port}/...` path (no leaking to direct `127.0.0.1:{port}` URLs)
+  - **Token-in-URL auth**: `?_t=JWT` query param accepted as alternative to `wdd_token` cookie — more reliable in iframes where cookie delivery can be blocked by same-site rules or browser policies; `_t` param stripped before forwarding to upstream
+  - `PortProxy.svelte`: `proxyURL()` now embeds `?_t={token}` in all iframe/link URLs
+- Full e2e run: 43 PASS, 6 SKIP (PTY), 0 FAIL

@@ -5,6 +5,12 @@ export interface PTYChannel {
   label: string;
 }
 
+export interface ProxyChannel {
+  chanID: number;
+  target: string;
+  label: string;
+}
+
 class SessionStore {
   token = $state<string | null>(null);
   username = $state<string | null>(null);
@@ -17,10 +23,20 @@ class SessionStore {
 
   /** User's home directory, set from session sync frame. */
   homeDir = $state<string | null>(null);
-  /** Which app occupies the main area: 'terminal' or 'files'. */
-  activeApp = $state<'terminal' | 'files'>('terminal');
+  /** Which app occupies the main area: 'terminal', 'files', or 'proxy'. */
+  activeApp = $state<'terminal' | 'files' | 'proxy'>('terminal');
   /** Whether the file manager is open. */
   fileManagerOpen = $state(false);
+
+  /** Active port proxy channels. */
+  proxyChannels = $state<ProxyChannel[]>([]);
+  /** Whether the port proxy panel is open. */
+  proxyManagerOpen = $state(false);
+  /** Active proxy chanID shown in proxy panel. */
+  activeProxyChanID = $state<number | null>(null);
+
+  /** Current wallpaper CSS value (background shorthand). */
+  wallpaper = $state<string>('');
 
   private _nextID = 1;
 
@@ -51,7 +67,13 @@ class SessionStore {
     this.homeDir = null;
     this.activeApp = 'terminal';
     this.fileManagerOpen = false;
+    this.proxyChannels = [];
+    this.proxyManagerOpen = false;
+    this.activeProxyChanID = null;
+    this.wallpaper = '';
     this._nextID = 1;
+    // Clear auth cookie
+    document.cookie = 'wdd_token=; path=/; max-age=0';
   }
 
   openFileManager(): void {
@@ -66,9 +88,20 @@ class SessionStore {
     }
   }
 
+  openProxyManager(): void {
+    this.proxyManagerOpen = true;
+    this.activeApp = 'proxy';
+  }
+
+  closeProxyManager(): void {
+    this.proxyManagerOpen = false;
+    if (this.activeApp === 'proxy') {
+      this.activeApp = this.ptyChannels.length > 0 ? 'terminal' : 'files';
+    }
+  }
+
   addPTYChannel(chanID: number, label?: string): void {
     const resolvedLabel = label ?? `Terminal ${chanID}`;
-    // Avoid duplicates
     if (!this.ptyChannels.find((c) => c.chanID === chanID)) {
       this.ptyChannels = [...this.ptyChannels, { chanID, label: resolvedLabel }];
     }
@@ -76,7 +109,6 @@ class SessionStore {
 
   removePTYChannel(chanID: number): void {
     this.ptyChannels = this.ptyChannels.filter((c) => c.chanID !== chanID);
-
     if (this.activeChannel === chanID) {
       this.activeChannel = this.ptyChannels[0]?.chanID ?? null;
     }
@@ -86,9 +118,22 @@ class SessionStore {
     this.activeChannel = chanID;
   }
 
+  addProxyChannel(chanID: number, target: string, label?: string): void {
+    const resolvedLabel = label ?? `Proxy :${target.split(':').pop()}`;
+    if (!this.proxyChannels.find((c) => c.chanID === chanID)) {
+      this.proxyChannels = [...this.proxyChannels, { chanID, target, label: resolvedLabel }];
+    }
+  }
+
+  removeProxyChannel(chanID: number): void {
+    this.proxyChannels = this.proxyChannels.filter((c) => c.chanID !== chanID);
+    if (this.activeProxyChanID === chanID) {
+      this.activeProxyChanID = this.proxyChannels[0]?.chanID ?? null;
+    }
+  }
+
   /** Returns a new unique channel ID (increments monotonically). */
   nextChannelID(): number {
-    // Channels start at 1; channel 0 is reserved for broadcast/stats.
     const id = this._nextID;
     this._nextID++;
     return id;

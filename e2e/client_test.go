@@ -36,6 +36,8 @@ const (
 	ftFileOp      byte = 0x11
 	ftDeskPush    byte = 0x12
 	ftDeskSave    byte = 0x13
+	ftPortScan    byte = 0x14
+	ftPortScanResp byte = 0x15
 )
 
 // ---- Wire frame ------------------------------------------------------------
@@ -405,6 +407,44 @@ func (c *WSClient) downloadFile(id, path string, timeout time.Duration) ([]byte,
 	}
 }
 
+// ---- Port scan helpers -----------------------------------------------------
+
+// PortScanEntry matches the server's PortInfo JSON.
+type PortScanEntry struct {
+	Port    int    `json:"port"`
+	PID     int    `json:"pid"`
+	Process string `json:"process"`
+	Cmdline string `json:"cmdline"`
+}
+
+// scanPorts sends FramePortScan and waits for a FramePortScanResp.
+func (c *WSClient) scanPorts(timeout time.Duration) ([]PortScanEntry, error) {
+	ch := c.subscribe(0xFFFF) // all frames
+	defer c.unsubscribe(0xFFFF, ch)
+
+	c.sendJSON(ftPortScan, 0, map[string]any{})
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case f := <-ch:
+			if f.Type != ftPortScanResp {
+				continue
+			}
+			var resp struct {
+				Ports []PortScanEntry `json:"ports"`
+			}
+			if err := json.Unmarshal(f.Payload, &resp); err != nil {
+				return nil, fmt.Errorf("decode port scan resp: %w", err)
+			}
+			return resp.Ports, nil
+		case <-deadline.C:
+			return nil, fmt.Errorf("timeout waiting for port scan response")
+		}
+	}
+}
+
 // ---- Misc helpers ----------------------------------------------------------
 
 // printableE2E strips control characters from terminal output.
@@ -420,8 +460,10 @@ func printableE2E(b []byte) string {
 
 // sessionSyncResult holds the parsed session sync payload.
 type sessionSyncResult struct {
-	PTYChannels []map[string]any
-	HomeDir     string
+	PTYChannels   []map[string]any
+	ProxyChannels []map[string]any
+	HomeDir       string
+	DesktopState  json.RawMessage
 }
 
 // syncSession drains any session-sync frames after connecting.
@@ -438,12 +480,16 @@ func (c *WSClient) syncSession(timeout time.Duration) sessionSyncResult {
 		case f := <-ch:
 			if f.Type == ftSessionSync {
 				var payload struct {
-					PTYChannels []map[string]any `json:"ptyChannels"`
-					HomeDir     string           `json:"homeDir"`
+					PTYChannels   []map[string]any `json:"ptyChannels"`
+					ProxyChannels []map[string]any `json:"proxyChannels"`
+					HomeDir       string           `json:"homeDir"`
+					DesktopState  json.RawMessage  `json:"desktopState"`
 				}
 				json.Unmarshal(f.Payload, &payload) //nolint:errcheck
 				result.PTYChannels = payload.PTYChannels
+				result.ProxyChannels = payload.ProxyChannels
 				result.HomeDir = payload.HomeDir
+				result.DesktopState = payload.DesktopState
 				return result
 			}
 		case <-deadline.C:

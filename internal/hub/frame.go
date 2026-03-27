@@ -27,6 +27,8 @@ const (
 	FrameFileOp          byte = 0x11 // C→S: File operation (rename/delete/chmod)
 	FrameDesktopPush     byte = 0x12 // S→C: Desktop state push
 	FrameDesktopSave     byte = 0x13 // C→S: Desktop state save
+	FramePortScan        byte = 0x14 // C→S: Request listening port scan
+	FramePortScanResp    byte = 0x15 // S→C: Listening port scan response
 )
 
 // maxPayloadSize is the maximum allowed payload size (32MB).

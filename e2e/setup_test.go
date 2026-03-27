@@ -38,6 +38,7 @@ type testConfig struct {
 	WSURL    string // e.g. ws://localhost:19080
 	User     string
 	Pass     string
+	SSHAddr  string          // e.g. 127.0.0.1:32233 — used for remote helpers (bun server etc.)
 	embedded *httptest.Server // non-nil when we started the server ourselves
 }
 
@@ -59,6 +60,8 @@ func resolveConfig() testConfig {
 	pass := os.Getenv("WEBDESKTOPD_PASS")
 	baseURL := os.Getenv("WEBDESKTOPD_URL")
 
+	sshAddr := os.Getenv("WEBDESKTOPD_SSH_ADDR")
+
 	if baseURL != "" {
 		// Use explicitly provided external server.
 		return testConfig{
@@ -66,10 +69,10 @@ func resolveConfig() testConfig {
 			WSURL:   toWS(baseURL),
 			User:    user,
 			Pass:    pass,
+			SSHAddr: sshAddr,
 		}
 	}
 
-	sshAddr := os.Getenv("WEBDESKTOPD_SSH_ADDR")
 	if sshAddr != "" {
 		// Start an embedded server backed by a real sshd.
 		srv := server.New(server.Config{
@@ -82,6 +85,7 @@ func resolveConfig() testConfig {
 			WSURL:    toWS(ts.URL),
 			User:     user,
 			Pass:     pass,
+			SSHAddr:  sshAddr,
 			embedded: ts,
 		}
 	}
@@ -92,6 +96,7 @@ func resolveConfig() testConfig {
 		WSURL:   "ws://localhost:19080",
 		User:    user,
 		Pass:    pass,
+		SSHAddr: envOr("WEBDESKTOPD_SSH_ADDR", ""),
 	}
 }
 

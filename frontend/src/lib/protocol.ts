@@ -28,6 +28,8 @@ export const FrameType = {
   FileOp: 0x11,
   DesktopPush: 0x12,
   DesktopSave: 0x13,
+  PortScan: 0x14,
+  PortScanResp: 0x15,
 } as const;
 
 export type FrameTypeValue = (typeof FrameType)[keyof typeof FrameType];

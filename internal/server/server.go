@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os/user"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
-
-	"os/user"
 
 	"github.com/gorilla/websocket"
 	"webdesktopd/internal/auth"
@@ -32,16 +36,25 @@ type PTYInfo struct {
 	Username string `json:"username"`
 }
 
+// ProxyInfo describes an active port proxy channel.
+type ProxyInfo struct {
+	ChanID uint16 `json:"chanID"`
+	Target string `json:"target"`
+}
+
 // SessionSyncPayload is sent to the client on (re)connect.
 type SessionSyncPayload struct {
-	PTYChannels []PTYInfo `json:"ptyChannels"`
-	HomeDir     string    `json:"homeDir"`
+	PTYChannels   []PTYInfo       `json:"ptyChannels"`
+	ProxyChannels []ProxyInfo     `json:"proxyChannels"`
+	HomeDir       string          `json:"homeDir"`
+	DesktopState  json.RawMessage `json:"desktopState,omitempty"`
 }
 
 // UserSession holds all active PTY sessions for a single user.
 type UserSession struct {
 	Username string
 	ptys     map[uint16]*ptySession.Session
+	proxies  map[uint16]*PortProxySession
 	mu       sync.Mutex
 }
 
@@ -49,6 +62,7 @@ func newUserSession(username string) *UserSession {
 	return &UserSession{
 		Username: username,
 		ptys:     make(map[uint16]*ptySession.Session),
+		proxies:  make(map[uint16]*PortProxySession),
 	}
 }
 
@@ -94,6 +108,55 @@ func (us *UserSession) detachHub() {
 
 	for _, s := range ptys {
 		s.Detach()
+	}
+}
+
+func (us *UserSession) addProxy(ps *PortProxySession) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	us.proxies[ps.ChanID] = ps
+}
+
+func (us *UserSession) removeProxy(chanID uint16) {
+	us.mu.Lock()
+	ps, ok := us.proxies[chanID]
+	if ok {
+		delete(us.proxies, chanID)
+	}
+	us.mu.Unlock()
+	if ok {
+		ps.Close()
+	}
+}
+
+func (us *UserSession) proxyInfoList() []ProxyInfo {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	infos := make([]ProxyInfo, 0, len(us.proxies))
+	for _, ps := range us.proxies {
+		infos = append(infos, ProxyInfo{ChanID: ps.ChanID, Target: ps.Target})
+	}
+	return infos
+}
+
+func (us *UserSession) registerProxyHandlers(h *hub.Hub) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	for _, ps := range us.proxies {
+		ps.Attach(h)
+		h.Register(ps.ChanID, ps)
+	}
+}
+
+func (us *UserSession) detachProxies() {
+	us.mu.Lock()
+	proxies := make([]*PortProxySession, 0, len(us.proxies))
+	for _, ps := range us.proxies {
+		proxies = append(proxies, ps)
+	}
+	us.mu.Unlock()
+	for _, ps := range proxies {
+		ps.Detach()
 	}
 }
 
@@ -147,6 +210,7 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`)) //nolint:errcheck
 	})
+	mux.HandleFunc("/_proxy/", s.handleHTTPProxy)
 	// Serve embedded frontend for all other paths (SPA fallback).
 	if s.assets != nil {
 		mux.Handle("/", s.spaHandler())
@@ -314,6 +378,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Register existing PTY sessions as input handlers. Ring buffer replay happens
 	// when the client sends an explicit OpenPTY frame (idempotent re-attach).
 	us.registerHandlers(h)
+	us.registerProxyHandlers(h)
 
 	// Resolve user home directory for the session sync payload.
 	// Fall back to the conventional path when the user is not present in the
@@ -327,10 +392,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		homeDir = "/home/" + username
 	}
 
+	// Load desktop state for session sync.
+	var desktopStateJSON json.RawMessage
+	if stateData, err := loadDesktopState(username); err == nil && stateData != nil {
+		desktopStateJSON = json.RawMessage(stateData)
+	}
+
 	// Send session sync frame.
 	syncPayload := SessionSyncPayload{
-		PTYChannels: us.ptyInfoList(),
-		HomeDir:     homeDir,
+		PTYChannels:   us.ptyInfoList(),
+		ProxyChannels: us.proxyInfoList(),
+		HomeDir:       homeDir,
+		DesktopState:  desktopStateJSON,
 	}
 	syncData, err := json.Marshal(syncPayload)
 	if err != nil {
@@ -352,6 +425,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Detach hub from all PTY sessions so they continue into ring buffers.
 	us.detachHub()
+	us.detachProxies()
 
 	slog.Info("ws: client disconnected", "username", username)
 }
@@ -387,6 +461,12 @@ func (c *controlHandler) HandleFrame(ctx context.Context, f hub.Frame) error {
 		return c.handleFileOp(ctx, f)
 	case hub.FrameDesktopSave:
 		return c.handleDesktopSave(ctx, f)
+	case hub.FrameOpenProxy:
+		return c.handleOpenProxy(ctx, f)
+	case hub.FrameCloseProxy:
+		return c.handleCloseProxy(ctx, f)
+	case hub.FramePortScan:
+		return c.handlePortScan(ctx, f)
 	default:
 		slog.Debug("controlHandler: unhandled frame type", "type", f.Type)
 	}
@@ -607,4 +687,170 @@ func (c *controlHandler) handleDesktopSave(ctx context.Context, f hub.Frame) err
 		slog.Warn("save desktop state error", "user", c.username, "err", err)
 	}
 	return nil
+}
+
+func (c *controlHandler) handleOpenProxy(ctx context.Context, f hub.Frame) error {
+	var msg struct {
+		Channel uint16 `json:"channel"`
+		Target  string `json:"target"`
+	}
+	if err := json.Unmarshal(f.Payload, &msg); err != nil {
+		return fmt.Errorf("parse OpenProxy payload: %w", err)
+	}
+	if msg.Channel == 0 {
+		return fmt.Errorf("chanID 0 is reserved for control")
+	}
+	if msg.Target == "" {
+		return fmt.Errorf("proxy target is required")
+	}
+
+	// If an existing proxy exists for this channel, re-attach it.
+	c.userSession.mu.Lock()
+	existing := c.userSession.proxies[msg.Channel]
+	c.userSession.mu.Unlock()
+
+	if existing != nil {
+		select {
+		case <-existing.closed:
+			// Closed; fall through to create new.
+		default:
+			existing.Attach(c.h)
+			c.h.Register(msg.Channel, existing)
+			slog.Info("controlHandler: re-attached proxy", "chanID", msg.Channel, "target", existing.Target)
+			return nil
+		}
+	}
+
+	ps, err := newPortProxySession(msg.Channel, msg.Target, c.h)
+	if err != nil {
+		slog.Warn("controlHandler: open proxy failed", "err", err, "target", msg.Target)
+		errPayload, _ := json.Marshal(map[string]any{"channel": msg.Channel, "error": err.Error()})
+		return c.h.Send(hub.Frame{
+			Type:    hub.FrameCloseProxy,
+			ChanID:  msg.Channel,
+			Payload: errPayload,
+		})
+	}
+
+	c.userSession.addProxy(ps)
+	c.h.Register(msg.Channel, ps)
+	slog.Info("controlHandler: opened proxy", "chanID", msg.Channel, "target", msg.Target)
+	return nil
+}
+
+func (c *controlHandler) handleCloseProxy(ctx context.Context, f hub.Frame) error {
+	var msg struct {
+		Channel uint16 `json:"channel"`
+	}
+	if err := json.Unmarshal(f.Payload, &msg); err != nil {
+		return fmt.Errorf("parse CloseProxy payload: %w", err)
+	}
+	c.h.Unregister(msg.Channel)
+	c.userSession.removeProxy(msg.Channel)
+	slog.Info("controlHandler: closed proxy", "chanID", msg.Channel)
+	return nil
+}
+
+// handlePortScan handles FramePortScan (0x14): scan for listening TCP ports.
+// Responds with FramePortScanResp (0x15) containing a JSON array of PortInfo.
+func (c *controlHandler) handlePortScan(_ context.Context, f hub.Frame) error {
+	ports := scanListeningPorts()
+	payload, _ := json.Marshal(map[string]any{"ports": ports})
+	return c.h.Send(hub.Frame{
+		Type:    hub.FramePortScanResp,
+		ChanID:  f.ChanID,
+		Payload: payload,
+	})
+}
+
+var proxyPathRe = regexp.MustCompile(`^/_proxy/(\d+)(/.*)$`)
+
+// handleHTTPProxy handles GET /_proxy/{port}/{path...} requests.
+// Auth: wdd_token cookie (set by the desktop page on login).
+// The iframe uses this REST endpoint directly — no WebSocket tunneling.
+func (s *Server) handleHTTPProxy(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("wdd_token")
+	if err != nil {
+		http.Error(w, "missing auth cookie", http.StatusUnauthorized)
+		return
+	}
+	if _, err := s.auth.ValidateToken(cookie.Value); err != nil {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	m := proxyPathRe.FindStringSubmatch(r.URL.Path)
+	if m == nil {
+		http.Error(w, "invalid proxy path (expected /_proxy/{port}/...)", http.StatusBadRequest)
+		return
+	}
+	port := m[1]
+	rest := m[2] // starts with "/"
+	if rest == "" {
+		rest = "/"
+	}
+
+	target, err := url.Parse("http://127.0.0.1:" + port)
+	if err != nil {
+		http.Error(w, "invalid port", http.StatusBadRequest)
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	// Strip Accept-Encoding so the upstream always returns uncompressed content.
+	// This lets ModifyResponse safely read and rewrite HTML bodies.
+	origDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		origDirector(req)
+		req.Header.Del("Accept-Encoding")
+	}
+
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		// Rewrite Location headers so redirects stay within the proxy path.
+		if loc := resp.Header.Get("Location"); loc != "" {
+			if u, err2 := url.Parse(loc); err2 == nil {
+				u.Scheme = ""
+				u.Host = ""
+				resp.Header.Set("Location", "/_proxy/"+port+u.String())
+			}
+		}
+		// Inject <base> tag into HTML responses so relative asset URLs resolve correctly.
+		if strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+			body, err2 := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err2 != nil {
+				return err2
+			}
+			baseTag := `<base href="/_proxy/` + port + `/">`
+			bodyStr := string(body)
+			if idx := strings.Index(strings.ToLower(bodyStr), "<head>"); idx >= 0 {
+				bodyStr = bodyStr[:idx+6] + baseTag + bodyStr[idx+6:]
+			} else {
+				bodyStr = baseTag + bodyStr
+			}
+			resp.Body = io.NopCloser(strings.NewReader(bodyStr))
+			resp.ContentLength = int64(len(bodyStr))
+			resp.Header.Del("Transfer-Encoding")
+		}
+		return nil
+	}
+	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		slog.Warn("http proxy error", "port", port, "err", err)
+		http.Error(w, "proxy error: "+err.Error(), http.StatusBadGateway)
+	}
+
+	// Rewrite path: strip /_proxy/{port} prefix.
+	r2 := r.Clone(r.Context())
+	r2.URL.Path = rest
+	if r.URL.RawPath != "" {
+		prefix := "/_proxy/" + port
+		r2.URL.RawPath = strings.TrimPrefix(r.URL.RawPath, prefix)
+		if r2.URL.RawPath == "" {
+			r2.URL.RawPath = "/"
+		}
+	}
+	r2.Host = "127.0.0.1:" + port
+
+	proxy.ServeHTTP(w, r2)
 }
