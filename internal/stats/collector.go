@@ -183,37 +183,26 @@ func (c *Collector) run(ctx context.Context) {
 	}
 }
 
-// snapshotToDelta returns a StatsDelta containing only the fields of cur that
-// differ from prev. Pass a zero prev to get a delta with all fields set (full
-// snapshot equivalent).
+// snapshotToDelta builds the frame payload for one stats tick.
+//
+// All numeric fields that the UI displays are always included — this prevents
+// NaN when the client mounts after the first tick and misses the initial full
+// frame. Only the string fields (kernel, hostname) are omitted once they have
+// been sent and haven't changed, since they are the main bandwidth cost.
 func snapshotToDelta(cur, prev Snapshot) StatsDelta {
-	d := StatsDelta{}
-
-	// Always send the rapidly-changing fields.
-	d.CPU = &cur.CPU
-	d.NetRxRate = &cur.NetRxRate
-	d.NetTxRate = &cur.NetTxRate
-	d.Uptime = &cur.Uptime
-
-	// Send slowly-changing fields only when they differ.
-	if cur.RAMUsed != prev.RAMUsed {
-		d.RAMUsed = &cur.RAMUsed
-	}
-	if cur.DiskUsed != prev.DiskUsed {
-		d.DiskUsed = &cur.DiskUsed
-	}
-	// loadAvg: compare element-wise; send if any value changed.
-	if !loadAvgEqual(cur.LoadAvg, prev.LoadAvg) {
-		d.LoadAvg = cur.LoadAvg
+	d := StatsDelta{
+		CPU:       &cur.CPU,
+		RAMUsed:   &cur.RAMUsed,
+		RAMTotal:  &cur.RAMTotal,
+		DiskUsed:  &cur.DiskUsed,
+		DiskTotal: &cur.DiskTotal,
+		NetRxRate: &cur.NetRxRate,
+		NetTxRate: &cur.NetTxRate,
+		Uptime:    &cur.Uptime,
+		LoadAvg:   cur.LoadAvg,
 	}
 
-	// Send static fields only when they differ from prev (effectively once).
-	if cur.RAMTotal != prev.RAMTotal {
-		d.RAMTotal = &cur.RAMTotal
-	}
-	if cur.DiskTotal != prev.DiskTotal {
-		d.DiskTotal = &cur.DiskTotal
-	}
+	// Strings are only sent when they change (effectively once at startup).
 	if cur.Kernel != prev.Kernel {
 		d.Kernel = &cur.Kernel
 	}
@@ -224,17 +213,6 @@ func snapshotToDelta(cur, prev Snapshot) StatsDelta {
 	return d
 }
 
-func loadAvgEqual(a, b []float64) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
 
 func (c *Collector) collect(prevCPU *cpuSample, prevNet *netSample) (Snapshot, error) {
 	curCPU, err := readCPU()
