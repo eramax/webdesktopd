@@ -273,9 +273,16 @@ type FileInfo struct {
 	ModTime string `json:"modTime"`
 }
 
-// listDir sends FrameFileList and waits for FrameFileListResp.
+// fileListResponse mirrors the server's FileListResponse struct.
+type fileListResponse struct {
+	Path    string     `json:"path"`
+	Entries []FileInfo `json:"entries"`
+	Error   string     `json:"error"`
+}
+
+// listDir sends FrameFileList and waits for a FrameFileListResp for that path.
 func (c *WSClient) listDir(path string, timeout time.Duration) ([]FileInfo, error) {
-	ch := c.subscribe(0) // file responses come on chanID 0
+	ch := c.subscribe(0)
 	defer c.unsubscribe(0, ch)
 	c.send(ftFileList, 0, []byte(path))
 
@@ -287,18 +294,113 @@ func (c *WSClient) listDir(path string, timeout time.Duration) ([]FileInfo, erro
 			if f.Type != ftFileResp {
 				continue
 			}
-			var files []FileInfo
-			if err := json.Unmarshal(f.Payload, &files); err != nil {
-				// Might be an error object.
-				var errResp map[string]string
-				if json.Unmarshal(f.Payload, &errResp) == nil {
-					return nil, fmt.Errorf("%s", errResp["error"])
-				}
-				return nil, fmt.Errorf("decode file list: %w", err)
+			var resp fileListResponse
+			if err := json.Unmarshal(f.Payload, &resp); err != nil {
+				return nil, fmt.Errorf("decode file list resp: %w", err)
 			}
-			return files, nil
+			if resp.Path != path {
+				continue // stale response for a different path
+			}
+			if resp.Error != "" {
+				return nil, fmt.Errorf("%s", resp.Error)
+			}
+			return resp.Entries, nil
 		case <-deadline.C:
-			return nil, fmt.Errorf("timeout waiting for file list response")
+			return nil, fmt.Errorf("timeout waiting for file list response for %q", path)
+		}
+	}
+}
+
+// fileOp sends a FrameFileOp (0x11) control message.
+func (c *WSClient) fileOp(op, path, dst string) {
+	c.sendJSON(ftFileOp, 0, map[string]any{
+		"op":   op,
+		"path": path,
+		"dst":  dst,
+		"mode": 0,
+	})
+}
+
+// uploadFile sends a file's content in 64 KB chunks via FrameFileUpload (0x06).
+func (c *WSClient) uploadFile(path string, data []byte) {
+	const chunkSize = 64 * 1024
+	uploadID := fmt.Sprintf("%-36s", "e2e-upload-"+path)
+	if len(uploadID) > 36 {
+		uploadID = uploadID[:36]
+	}
+	idBytes := []byte(uploadID)
+	pathBytes := []byte(path)
+
+	for offset := 0; offset < len(data) || (len(data) == 0 && offset == 0); {
+		end := offset + chunkSize
+		if end > len(data) {
+			end = len(data)
+		}
+		chunk := data[offset:end]
+
+		// Wire format: uploadID(36) | pathLen(2 BE) | path | offset(8 BE) | data
+		payload := make([]byte, 36+2+len(pathBytes)+8+len(chunk))
+		copy(payload[0:36], idBytes)
+		binary.BigEndian.PutUint16(payload[36:38], uint16(len(pathBytes)))
+		copy(payload[38:38+len(pathBytes)], pathBytes)
+		binary.BigEndian.PutUint64(payload[38+len(pathBytes):], uint64(offset))
+		copy(payload[38+len(pathBytes)+8:], chunk)
+		c.send(ftFileUpload, 0, payload)
+
+		offset += len(chunk)
+		if len(chunk) == 0 {
+			break
+		}
+	}
+}
+
+// downloadFile sends FrameFileDownloadReq and collects all chunks into a []byte.
+func (c *WSClient) downloadFile(id, path string, timeout time.Duration) ([]byte, error) {
+	ch := c.subscribe(0)
+	defer c.unsubscribe(0, ch)
+
+	c.sendJSON(ftFileDownReq, 0, map[string]any{"id": id, "path": path})
+
+	idPad := fmt.Sprintf("%-36s", id)
+	chunks := map[int64][]byte{}
+	var total int64
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case f := <-ch:
+			if f.Type == ftProgress {
+				var p struct {
+					ID        string `json:"id"`
+					BytesSent int64  `json:"bytesSent"`
+					Total     int64  `json:"total"`
+					Error     string `json:"error"`
+				}
+				if json.Unmarshal(f.Payload, &p) == nil && p.ID == id {
+					if p.Error != "" {
+						return nil, fmt.Errorf("download error: %s", p.Error)
+					}
+					total = p.Total
+					if p.Total > 0 && p.BytesSent >= p.Total {
+						// Reassemble
+						out := make([]byte, total)
+						for off, chunk := range chunks {
+							copy(out[off:], chunk)
+						}
+						return out, nil
+					}
+				}
+			}
+			if f.Type == ftFileDown && len(f.Payload) >= 44 {
+				gotID := strings.TrimRight(string(f.Payload[:36]), " ")
+				if gotID == id || string(f.Payload[:36]) == idPad {
+					offset := int64(binary.BigEndian.Uint64(f.Payload[36:44]))
+					chunks[offset] = append([]byte(nil), f.Payload[44:]...)
+				}
+			}
+		case <-deadline.C:
+			return nil, fmt.Errorf("timeout waiting for download of %q", path)
 		}
 	}
 }
@@ -316,29 +418,36 @@ func printableE2E(b []byte) string {
 	return sb.String()
 }
 
+// sessionSyncResult holds the parsed session sync payload.
+type sessionSyncResult struct {
+	PTYChannels []map[string]any
+	HomeDir     string
+}
+
 // syncSession drains any session-sync frames after connecting.
-// Returns the parsed ptyChannels from the sync payload.
-func (c *WSClient) syncSession(timeout time.Duration) []map[string]any {
+func (c *WSClient) syncSession(timeout time.Duration) sessionSyncResult {
 	ch := c.subscribe(0xFFFF) // all frames
 	defer c.unsubscribe(0xFFFF, ch)
 
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 
-	var channels []map[string]any
+	var result sessionSyncResult
 	for {
 		select {
 		case f := <-ch:
 			if f.Type == ftSessionSync {
 				var payload struct {
 					PTYChannels []map[string]any `json:"ptyChannels"`
+					HomeDir     string           `json:"homeDir"`
 				}
 				json.Unmarshal(f.Payload, &payload) //nolint:errcheck
-				channels = payload.PTYChannels
-				return channels
+				result.PTYChannels = payload.PTYChannels
+				result.HomeDir = payload.HomeDir
+				return result
 			}
 		case <-deadline.C:
-			return channels
+			return result
 		}
 	}
 }

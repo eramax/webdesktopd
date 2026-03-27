@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"os/user"
+
 	"github.com/gorilla/websocket"
 	"webdesktopd/internal/auth"
 	"webdesktopd/internal/hub"
@@ -33,6 +35,7 @@ type PTYInfo struct {
 // SessionSyncPayload is sent to the client on (re)connect.
 type SessionSyncPayload struct {
 	PTYChannels []PTYInfo `json:"ptyChannels"`
+	HomeDir     string    `json:"homeDir"`
 }
 
 // UserSession holds all active PTY sessions for a single user.
@@ -312,9 +315,22 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	// when the client sends an explicit OpenPTY frame (idempotent re-attach).
 	us.registerHandlers(h)
 
+	// Resolve user home directory for the session sync payload.
+	// Fall back to the conventional path when the user is not present in the
+	// local passwd database (e.g. remote-only SSH users in embedded test mode).
+	homeDir := ""
+	if u, err := user.Lookup(username); err == nil {
+		homeDir = u.HomeDir
+	} else if username == "root" {
+		homeDir = "/root"
+	} else {
+		homeDir = "/home/" + username
+	}
+
 	// Send session sync frame.
 	syncPayload := SessionSyncPayload{
 		PTYChannels: us.ptyInfoList(),
+		HomeDir:     homeDir,
 	}
 	syncData, err := json.Marshal(syncPayload)
 	if err != nil {
@@ -453,24 +469,31 @@ type FileInfo struct {
 	ModTime string `json:"modTime"`
 }
 
+// FileListResponse is the JSON payload for FrameFileListResp.
+type FileListResponse struct {
+	Path    string     `json:"path"`
+	Entries []FileInfo `json:"entries,omitempty"`
+	Error   string     `json:"error,omitempty"`
+}
+
 // handleFileList handles FrameFileList (0x04): list a directory.
+// Request payload: raw UTF-8 path bytes.
+// Response: FileListResponse JSON.
 func (c *controlHandler) handleFileList(ctx context.Context, f hub.Frame) error {
 	path := string(f.Payload)
 	if path == "" {
 		path = "/"
 	}
 
+	resp := FileListResponse{Path: path}
 	entries, err := listDirectory(path)
 	if err != nil {
-		errResp, _ := json.Marshal(map[string]string{"error": err.Error()})
-		return c.h.Send(hub.Frame{
-			Type:    hub.FrameFileListResp,
-			ChanID:  f.ChanID,
-			Payload: errResp,
-		})
+		resp.Error = err.Error()
+	} else {
+		resp.Entries = entries
 	}
 
-	data, err := json.Marshal(entries)
+	data, err := json.Marshal(resp)
 	if err != nil {
 		return fmt.Errorf("marshal file list: %w", err)
 	}
@@ -559,6 +582,18 @@ func (c *controlHandler) handleFileOp(ctx context.Context, f hub.Frame) error {
 	case "chmod":
 		if err := chmodFile(op.Path, op.Mode); err != nil {
 			slog.Warn("chmod failed", "path", op.Path, "mode", op.Mode, "err", err)
+		}
+	case "mkdir":
+		if err := mkdirPath(op.Path); err != nil {
+			slog.Warn("mkdir failed", "path", op.Path, "err", err)
+		}
+	case "touch":
+		if err := touchFile(op.Path); err != nil {
+			slog.Warn("touch failed", "path", op.Path, "err", err)
+		}
+	case "copy":
+		if err := copyPath(op.Path, op.Dst); err != nil {
+			slog.Warn("copy failed", "src", op.Path, "dst", op.Dst, "err", err)
 		}
 	default:
 		slog.Warn("unknown file op", "op", op.Op)

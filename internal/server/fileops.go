@@ -159,10 +159,97 @@ func renameFile(src, dst string) error {
 	return os.Rename(src, dst)
 }
 
-// deleteFile removes a file or empty directory.
+// deleteFile removes a file or directory tree recursively.
 func deleteFile(path string) error {
 	path = filepath.Clean(path)
-	return os.Remove(path)
+	return os.RemoveAll(path)
+}
+
+// mkdirPath creates a directory and all necessary parents.
+func mkdirPath(path string) error {
+	path = filepath.Clean(path)
+	return os.MkdirAll(path, 0o755)
+}
+
+// touchFile creates an empty file, creating parent directories as needed.
+// If the file already exists its contents are preserved.
+func touchFile(path string) error {
+	path = filepath.Clean(path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// copyPath copies src to dst. Directories are copied recursively.
+func copyPath(src, dst string) error {
+	src = filepath.Clean(src)
+	dst = filepath.Clean(dst)
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return copyDir(src, dst)
+	}
+	return copyFile(src, dst)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
+}
+
+func copyDir(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dst, info.Mode()); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // chmodFile changes the file permissions.

@@ -3,16 +3,28 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"os/user"
 	"strings"
 	"testing"
 	"time"
 )
+
+// requirePTY skips the test if cfg.User does not exist in the local passwd
+// database. PTY spawning requires the user to be present locally; in embedded-
+// server mode the user is only on the remote sshd.
+func requirePTY(t *testing.T) {
+	t.Helper()
+	if _, err := user.Lookup(cfg.User); err != nil {
+		t.Skipf("user %q not found locally (%v) — PTY tests require a local account", cfg.User, err)
+	}
+}
 
 // TestPTYOpenAndEcho opens a PTY, sends an echo command, verifies the output.
 func TestPTYOpenAndEcho(t *testing.T) {
 	token := mustAuth(t, cfg.User, cfg.Pass)
 	c := dial(t, token)
 	c.syncSession(2 * time.Second)
+	requirePTY(t)
 
 	chanID := uint16(10)
 	c.openPTY(chanID, "/bin/bash", "")
@@ -36,6 +48,7 @@ func TestPTYRunsAsCorrectUser(t *testing.T) {
 	token := mustAuth(t, cfg.User, cfg.Pass)
 	c := dial(t, token)
 	c.syncSession(2 * time.Second)
+	requirePTY(t)
 
 	chanID := uint16(11)
 	c.openPTY(chanID, "/bin/bash", "")
@@ -59,6 +72,7 @@ func TestPTYMultipleTabs(t *testing.T) {
 	token := mustAuth(t, cfg.User, cfg.Pass)
 	c := dial(t, token)
 	c.syncSession(2 * time.Second)
+	requirePTY(t)
 
 	// Open two PTY channels.
 	c.openPTY(20, "/bin/bash", "")
@@ -122,6 +136,7 @@ func TestPTYRingBufferReconnect(t *testing.T) {
 	// First connection: open PTY, run a command, then disconnect.
 	c1 := dial(t, token)
 	c1.syncSession(2 * time.Second)
+	requirePTY(t)
 	c1.openPTY(chanID, "/bin/bash", "")
 	time.Sleep(800 * time.Millisecond)
 
@@ -169,6 +184,7 @@ func TestPTYResize(t *testing.T) {
 	token := mustAuth(t, cfg.User, cfg.Pass)
 	c := dial(t, token)
 	c.syncSession(2 * time.Second)
+	requirePTY(t)
 
 	chanID := uint16(40)
 	c.openPTY(chanID, "/bin/bash", "")
@@ -197,6 +213,7 @@ func TestPTYSessionSync(t *testing.T) {
 	// First connection: open a PTY.
 	c1 := dial(t, token)
 	c1.syncSession(2 * time.Second)
+	requirePTY(t)
 
 	chanID := uint16(50)
 	c1.openPTY(chanID, "/bin/bash", "")
@@ -207,17 +224,17 @@ func TestPTYSessionSync(t *testing.T) {
 	// Second connection: session sync should list chanID 50.
 	c2 := dial(t, token)
 	defer c2.Close()
-	channels := c2.syncSession(2 * time.Second)
+	syncResult := c2.syncSession(2 * time.Second)
 
 	found := false
-	for _, ch := range channels {
+	for _, ch := range syncResult.PTYChannels {
 		if id, ok := ch["chanID"].(float64); ok && uint16(id) == chanID {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("chanID %d not found in session-sync channels: %v", chanID, channels)
+		t.Fatalf("chanID %d not found in session-sync channels: %v", chanID, syncResult.PTYChannels)
 	}
 	t.Logf("✓ session-sync lists chanID %d", chanID)
 

@@ -15,6 +15,13 @@ class SessionStore {
   ptyChannels = $state<PTYChannel[]>([]);
   activeChannel = $state<number | null>(null);
 
+  /** User's home directory, set from session sync frame. */
+  homeDir = $state<string | null>(null);
+  /** Which app occupies the main area: 'terminal' or 'files'. */
+  activeApp = $state<'terminal' | 'files'>('terminal');
+  /** Whether the file manager is open. */
+  fileManagerOpen = $state(false);
+
   private _nextID = 1;
 
   login(username: string, token: string): void {
@@ -41,7 +48,22 @@ class SessionStore {
     this.connectCount = 0;
     this.ptyChannels = [];
     this.activeChannel = null;
+    this.homeDir = null;
+    this.activeApp = 'terminal';
+    this.fileManagerOpen = false;
     this._nextID = 1;
+  }
+
+  openFileManager(): void {
+    this.fileManagerOpen = true;
+    this.activeApp = 'files';
+  }
+
+  closeFileManager(): void {
+    this.fileManagerOpen = false;
+    if (this.activeApp === 'files') {
+      this.activeApp = 'terminal';
+    }
   }
 
   addPTYChannel(chanID: number, label?: string): void {

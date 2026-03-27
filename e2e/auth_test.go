@@ -138,8 +138,8 @@ func TestWSMissingToken(t *testing.T) {
 func TestWSValidTokenConnects(t *testing.T) {
 	token := mustAuth(t, cfg.User, cfg.Pass)
 	c := dial(t, token)
-	channels := c.syncSession(2 * time.Second)
-	t.Logf("session-sync received: %d open PTY channel(s)", len(channels))
+	result := c.syncSession(2 * time.Second)
+	t.Logf("session-sync received: %d open PTY channel(s)", len(result.PTYChannels))
 }
 
 func min(a, b int) int {

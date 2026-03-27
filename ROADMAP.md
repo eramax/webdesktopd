@@ -59,11 +59,16 @@
 
 ---
 
-## Phase 4 – File Manager
+## Phase 4 – File Manager ✅ COMPLETE
 
-- [ ] `internal/files` – list dir, upload (64KB chunks), download, rename/delete
-- [ ] Frames `0x04`–`0x09`, `0x11`
-- [ ] Frontend file manager component (tree + list, drag-to-upload)
+- [x] List directory — `FrameFileList (0x04)` / `FrameFileListResp (0x05)`, response now wraps `{path, entries, error}`
+- [x] Upload — `FrameFileUpload (0x06)`, chunked 64 KB, progress via `0x07`
+- [x] Download — `FrameFileDownloadReq (0x08)` / `FrameFileDownload (0x09)`, chunk reassembly in browser
+- [x] File ops `FrameFileOp (0x11)` — rename, delete (recursive `os.RemoveAll`), mkdir (recursive), touch, copy (file + dir tree)
+- [x] `homeDir` added to `SessionSyncPayload` — looked up via `os/user`, falls back to `/home/<user>`
+- [x] Frontend `FileManager.svelte` — breadcrumbs, grid icons by type (folder/image/video/audio/archive/code/pdf/file), show/hide hidden, new folder, new file, upload (button + drag-and-drop), download, copy, cut, paste, delete (with confirm), inline rename (F2), right-click context menu, multi-select (click/Ctrl/Shift), keyboard shortcuts
+- [x] Dock — Files launcher button live; Files entry in running-windows strip with × close; `activeApp` state (`terminal` | `files`)
+- [x] e2e — 29 tests pass against live build-server: list, metadata, homeDir sync, mkdir (flat + nested), touch, upload/download round-trip, upload 200 KB integrity, rename, copy file, copy dir, delete file, delete dir (recursive)
 
 ---
 
@@ -144,3 +149,18 @@
   - `server.go`: added `stats.Collector` to `Server`; `handleWS` calls `Add`/`Remove` (deferred)
   - 3 unit tests pass (start/stop lifecycle, payload validation, multiple senders)
   - Frontend `StatsDock.svelte` was already complete (Phase 1)
+
+### Session 5 (2026-03-27)
+- Implemented Phase 4 file manager (full):
+  - Backend: `fileops.go` — `mkdirPath`, `touchFile`, `copyPath`/`copyFile`/`copyDir` (recursive), `deleteFile` upgraded to `os.RemoveAll`
+  - Backend: `server.go` — `FileListResponse` wraps `{path, entries, error}`; `handleFileOp` handles mkdir/touch/copy; `homeDir` in `SessionSyncPayload` (falls back to `/home/<user>` if `os/user.Lookup` fails)
+  - Frontend: `FileManager.svelte` — full-featured file manager (see Phase 4 checklist)
+  - Frontend: `session.svelte.ts` — added `homeDir`, `activeApp`, `fileManagerOpen`
+  - Frontend: `Dock.svelte` — Files launcher live, running-window button with close
+  - Frontend: `desktop/+page.svelte` — mounts FileManager, routes session sync homeDir
+  - e2e: `client_test.go` — `listDir` updated for new response format; `syncSession` returns `sessionSyncResult{PTYChannels, HomeDir}`; added `fileOp`, `uploadFile`, `downloadFile` helpers
+  - e2e: `files_test.go` — 16 new tests; all 29 file e2e tests pass against live build-server
+  - e2e: `pty_test.go` — `requirePTY` skips PTY tests when user not in local passwd
+  - Deployment: `go run ./cmd/deploy --pass='max***'` → builds, SCPs, starts on build-server:18080
+  - Tunnel: `go run ./cmd/tunnel --pass='max***'` → localhost:19080 → remote:18080
+  - Full e2e run: 35 PASS, 6 SKIP (PTY), 0 FAIL

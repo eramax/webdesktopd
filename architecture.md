@@ -566,26 +566,15 @@ This section is meant to drive the development process. For each feature, we def
 
 ## 9. Phasing
 
-Suggested development order:
-
-1. **Core backend skeleton**
-   - HTTP server, `/auth`, JWT.
-   - WS hub with basic frame handling.
-2. **PTY sessions with single terminal tab**
-   - Spawn shell as user, streaming to/from WS.
-3. **Ring buffer + reconnect**
-   - Implement replay logic.
-4. **Multi-tab support**
-   - Vertical tabs, multiple PTYs.
-5. **Stats collector + dock**
-   - `/proc` metrics, `0x03` frames, dock UI.
-6. **File manager**
-   - List, upload/download, progress.
-7. **Desktop persistence**
-   - `state.json` + `0x12`/`0x13`.
-8. **Port proxy**
-   - TCP tunnel, minimal frontend view.
-9. **Polish & hardening**
-   - Error handling, logging, metrics, config.
+| # | Phase | Status | Notes |
+|---|---|---|---|
+| 1 | **Core backend skeleton** — HTTP server, `/auth`, JWT, WS hub | ✅ Done | |
+| 2 | **PTY sessions** — spawn shell, stream to/from WS, reconnect | ✅ Done | Ring buffer replay on reconnect |
+| 3 | **Multi-tab support** — vertical tabs, multiple PTYs | ✅ Done | Per-channel routing |
+| 4 | **Stats collector + dock** — `/proc` metrics, `0x03` frames, dock UI | ✅ Done | CPU, RAM, disk, net, load, uptime, kernel |
+| 5 | **File manager** — list, upload/download, mkdir, touch, copy, cut/paste, delete, rename | ✅ Done | Full UI in `FileManager.svelte`; `homeDir` in session sync; e2e tests pass |
+| 6 | **Desktop persistence** — `state.json`, `0x12`/`0x13` frames | ⬜ Pending | |
+| 7 | **Port proxy** — TCP tunnel, `0x0F`/`0x10` frames, frontend view | ⬜ Pending | |
+| 8 | **Polish & hardening** — error handling, logging, metrics, config | ⬜ Pending | |
 
 ***

@@ -7,13 +7,19 @@
     client: WSClient;
     channels: PTYChannel[];
     activeChannel: number | null;
+    activeApp: 'terminal' | 'files';
+    fileManagerOpen: boolean;
     onNewTerminal: () => void;
     onSelectChannel: (chanID: number) => void;
     onCloseChannel: (chanID: number) => void;
+    onOpenFiles: () => void;
+    onCloseFiles: () => void;
   }
 
-  let { client, channels, activeChannel, onNewTerminal, onSelectChannel, onCloseChannel }: Props =
-    $props();
+  let {
+    client, channels, activeChannel, activeApp, fileManagerOpen,
+    onNewTerminal, onSelectChannel, onCloseChannel, onOpenFiles, onCloseFiles
+  }: Props = $props();
 
   // ── Clock ────────────────────────────────────────────────────────────────────
 
@@ -205,11 +211,14 @@
       </svg>
     </button>
 
-    <!-- File manager launcher (placeholder, greyed out until Phase 4) -->
+    <!-- File manager launcher -->
     <button
-      title="File Manager (coming soon)"
-      disabled
-      class="w-9 h-9 flex items-center justify-center rounded-lg text-zinc-600 cursor-not-allowed transition"
+      title="File Manager"
+      onclick={(e) => { e.stopPropagation(); onOpenFiles(); }}
+      class="w-9 h-9 flex items-center justify-center rounded-lg transition
+             {fileManagerOpen && activeApp === 'files'
+               ? 'bg-blue-600 text-white'
+               : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700'}"
     >
       <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -224,11 +233,10 @@
         <button
           onclick={(e) => { e.stopPropagation(); onSelectChannel(ch.chanID); }}
           class="flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs transition max-w-36
-            {activeChannel === ch.chanID
+            {activeApp === 'terminal' && activeChannel === ch.chanID
               ? 'bg-blue-600 text-white'
               : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
         >
-          <!-- Small terminal icon -->
           <svg class="w-3.5 h-3.5 shrink-0 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="2" y="3" width="20" height="15" rx="2" />
             <polyline points="8 10 12 14 8 18" />
@@ -237,7 +245,6 @@
           <span class="truncate">{ch.label}</span>
         </button>
 
-        <!-- Close button, appears on hover -->
         <button
           onclick={(e) => { e.stopPropagation(); onCloseChannel(ch.chanID); }}
           title="Close"
@@ -250,6 +257,35 @@
         </button>
       </div>
     {/each}
+
+    <!-- File Manager window button (shown when open) -->
+    {#if fileManagerOpen}
+      <div class="group relative shrink-0">
+        <button
+          onclick={(e) => { e.stopPropagation(); onOpenFiles(); }}
+          class="flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs transition
+            {activeApp === 'files'
+              ? 'bg-blue-600 text-white'
+              : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
+        >
+          <svg class="w-3.5 h-3.5 shrink-0 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          </svg>
+          <span>Files</span>
+        </button>
+
+        <button
+          onclick={(e) => { e.stopPropagation(); onCloseFiles(); }}
+          title="Close"
+          class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-zinc-600 hover:bg-red-500 text-zinc-200
+                 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
+        >
+          <svg class="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
+      </div>
+    {/if}
   </div>
 
   <!-- ── System tray ───────────────────────────────────────────────────── -->

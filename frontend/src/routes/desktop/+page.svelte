@@ -5,6 +5,7 @@
   import { FrameType } from '$lib/protocol';
   import type { Frame } from '$lib/protocol';
   import Terminal from '$lib/components/Terminal.svelte';
+  import FileManager from '$lib/components/FileManager.svelte';
   import Dock from '$lib/components/Dock.svelte';
 
   // Redirect to login if not authenticated
@@ -17,13 +18,15 @@
     // Connect WebSocket
     session.client.connect();
 
-    // Handle session sync from server: restore existing PTY channels.
+    // Handle session sync from server: restore existing PTY channels + homeDir.
     session.client.registerBroadcast('session-sync', (frame: Frame) => {
       if (frame.type === FrameType.SessionSync) {
         try {
           const state = JSON.parse(new TextDecoder().decode(frame.payload)) as {
             ptyChannels?: Array<{ chanID: number; username?: string }>;
+            homeDir?: string;
           };
+          if (state.homeDir) session.homeDir = state.homeDir;
           if (state.ptyChannels) {
             for (const ch of state.ptyChannels) {
               session.addPTYChannel(ch.chanID, `Terminal ${ch.chanID}`);
@@ -56,6 +59,7 @@
     const chanID = session.nextChannelID();
     session.addPTYChannel(chanID, `Terminal ${chanID}`);
     session.setActiveChannel(chanID);
+    session.activeApp = 'terminal';
   }
 
   function closeTerminal(chanID: number) {
@@ -65,7 +69,21 @@
     session.removePTYChannel(chanID);
   }
 
+  function openFiles() {
+    session.openFileManager();
+  }
+
+  function closeFiles() {
+    session.closeFileManager();
+  }
+
+  function selectChannel(chanID: number) {
+    session.setActiveChannel(chanID);
+    session.activeApp = 'terminal';
+  }
+
   let connected = $derived(session.connected);
+  let effectiveHomeDir = $derived(session.homeDir ?? '/');
 </script>
 
 <svelte:head>
@@ -75,7 +93,7 @@
 <!-- Full-screen desktop -->
 <div class="flex flex-col h-screen bg-zinc-950 text-zinc-100 overflow-hidden">
 
-  <!-- Thin top bar: title + connection status + user + disconnect -->
+  <!-- Thin top bar -->
   <header class="flex items-center justify-between px-4 py-1.5 bg-zinc-900 border-b border-zinc-800 shrink-0">
     <span class="font-semibold text-zinc-200 text-sm tracking-tight">webdesktopd</span>
 
@@ -98,27 +116,33 @@
     </div>
   </header>
 
-  <!-- Desktop / app area -->
-  <!-- position:relative so absolute children fill exactly this box -->
+  <!-- Main app area -->
   <main class="flex-1 overflow-hidden bg-black relative">
     {#if session.client}
+      <!-- Terminals: always mounted, only visibility changes (preserves PTY state) -->
       {#each session.ptyChannels as ch (ch.chanID)}
-        <!--
-          All terminals are always position:absolute and fill the same box.
-          Only visibility changes on switch — no layout change → no resize
-          event → no SIGWINCH → btop/vim won't flash on tab switch.
-        -->
         <div
           class="absolute inset-0"
-          style="visibility: {session.activeChannel === ch.chanID ? 'visible' : 'hidden'}"
+          style="visibility: {session.activeApp === 'terminal' && session.activeChannel === ch.chanID ? 'visible' : 'hidden'}"
         >
           <Terminal chanID={ch.chanID} client={session.client} connectCount={session.connectCount} />
         </div>
       {/each}
 
-      {#if session.ptyChannels.length === 0}
+      <!-- File manager: mounted when open, visible when active -->
+      {#if session.fileManagerOpen}
+        <div
+          class="absolute inset-0"
+          style="visibility: {session.activeApp === 'files' ? 'visible' : 'hidden'}"
+        >
+          <FileManager client={session.client} homeDir={effectiveHomeDir} />
+        </div>
+      {/if}
+
+      <!-- Empty state -->
+      {#if session.ptyChannels.length === 0 && !session.fileManagerOpen}
         <div class="flex h-full items-center justify-center text-zinc-700 text-sm">
-          No app open — click the terminal icon in the dock
+          No app open — use the dock to open a terminal or file manager
         </div>
       {/if}
     {/if}
@@ -130,9 +154,13 @@
       client={session.client}
       channels={session.ptyChannels}
       activeChannel={session.activeChannel}
+      activeApp={session.activeApp}
+      fileManagerOpen={session.fileManagerOpen}
       onNewTerminal={openNewTerminal}
-      onSelectChannel={(id) => session.setActiveChannel(id)}
+      onSelectChannel={selectChannel}
       onCloseChannel={closeTerminal}
+      onOpenFiles={openFiles}
+      onCloseFiles={closeFiles}
     />
   {/if}
 </div>
