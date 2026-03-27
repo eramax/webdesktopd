@@ -20,19 +20,37 @@ import (
 
 const tickInterval = time.Second
 
-// Snapshot is the JSON payload for a FrameStats (0x03) frame.
+// Snapshot is a full stats payload (sent once on connect).
 type Snapshot struct {
-	CPU       float64   `json:"cpu"`       // percentage 0-100
-	RAMUsed   uint64    `json:"ramUsed"`   // bytes
-	RAMTotal  uint64    `json:"ramTotal"`  // bytes
-	DiskUsed  uint64    `json:"diskUsed"`  // bytes
-	DiskTotal uint64    `json:"diskTotal"` // bytes
-	NetRxRate uint64    `json:"netRxRate"` // bytes/s
-	NetTxRate uint64    `json:"netTxRate"` // bytes/s
-	Uptime    float64   `json:"uptime"`    // seconds
-	LoadAvg   []float64 `json:"loadAvg"`   // [1m, 5m, 15m]
+	CPU       float64   `json:"cpu"`
+	RAMUsed   uint64    `json:"ramUsed"`
+	RAMTotal  uint64    `json:"ramTotal"`
+	DiskUsed  uint64    `json:"diskUsed"`
+	DiskTotal uint64    `json:"diskTotal"`
+	NetRxRate uint64    `json:"netRxRate"`
+	NetTxRate uint64    `json:"netTxRate"`
+	Uptime    float64   `json:"uptime"`
+	LoadAvg   []float64 `json:"loadAvg"`
 	Kernel    string    `json:"kernel"`
 	Hostname  string    `json:"hostname"`
+}
+
+// StatsDelta is the FrameStats (0x03) payload sent every tick.
+// Only fields that changed since the previous frame are non-nil / non-empty.
+// The first frame a client receives is always a full Snapshot (all fields set);
+// subsequent frames only carry what actually changed.
+type StatsDelta struct {
+	CPU       *float64  `json:"cpu,omitempty"`
+	RAMUsed   *uint64   `json:"ramUsed,omitempty"`
+	RAMTotal  *uint64   `json:"ramTotal,omitempty"`
+	DiskUsed  *uint64   `json:"diskUsed,omitempty"`
+	DiskTotal *uint64   `json:"diskTotal,omitempty"`
+	NetRxRate *uint64   `json:"netRxRate,omitempty"`
+	NetTxRate *uint64   `json:"netTxRate,omitempty"`
+	Uptime    *float64  `json:"uptime,omitempty"`
+	LoadAvg   []float64 `json:"loadAvg,omitempty"`
+	Kernel    *string   `json:"kernel,omitempty"`
+	Hostname  *string   `json:"hostname,omitempty"`
 }
 
 // Sender is any value that can receive a hub frame (e.g. *hub.Hub).
@@ -40,14 +58,19 @@ type Sender interface {
 	Send(f hub.Frame) error
 }
 
-// Collector broadcasts Snapshot frames to all registered senders every second.
+// Collector broadcasts StatsDelta frames to all registered senders every second.
 // It is ref-counted: the background goroutine runs only while at least one
 // sender is registered, and stops automatically when the last one leaves.
+//
+// When a new sender joins via Add, it immediately receives the last full
+// Snapshot so it has all fields (including static ones like kernel/hostname).
+// Subsequent ticks broadcast only the fields that changed.
 type Collector struct {
 	mu      sync.Mutex
 	senders map[uint64]Sender
 	cancel  context.CancelFunc // non-nil while running
 	refs    int
+	last    Snapshot // last collected snapshot, protected by mu
 
 	// Cached at startup (don't change at runtime).
 	kernel   string
@@ -70,6 +93,8 @@ func New() *Collector {
 }
 
 // Add registers a sender and starts the collector loop if this is the first.
+// If a snapshot has already been collected, the new sender immediately receives
+// a full Snapshot frame so it has all static fields (kernel, hostname, totals).
 // Returns an ID that must be passed to Remove when done.
 func (c *Collector) Add(s Sender) uint64 {
 	id := c.idGen.Add(1)
@@ -82,6 +107,12 @@ func (c *Collector) Add(s Sender) uint64 {
 		c.cancel = cancel
 		go c.run(ctx)
 		slog.Info("stats: collector started")
+	} else if c.last.RAMTotal > 0 {
+		// Send the last full snapshot to the new sender immediately so it
+		// has kernel/hostname/totals before the next tick fires.
+		if data, err := json.Marshal(snapshotToDelta(c.last, Snapshot{})); err == nil {
+			_ = s.Send(hub.Frame{Type: hub.FrameStats, ChanID: 0, Payload: data})
+		}
 	}
 	return id
 }
@@ -103,7 +134,7 @@ func (c *Collector) Remove(id uint64) {
 }
 
 // run is the background goroutine. It takes two samples one second apart to
-// compute CPU and network rates, then broadcasts the result.
+// compute CPU and network rates, then broadcasts a StatsDelta to all senders.
 func (c *Collector) run(ctx context.Context) {
 	var prevCPU cpuSample
 	var prevNet netSample
@@ -128,16 +159,17 @@ func (c *Collector) run(ctx context.Context) {
 			continue
 		}
 
-		data, err := json.Marshal(snap)
+		c.mu.Lock()
+		delta := snapshotToDelta(snap, c.last)
+		c.last = snap
+		c.mu.Unlock()
+
+		data, err := json.Marshal(delta)
 		if err != nil {
 			continue
 		}
 
-		frame := hub.Frame{
-			Type:    hub.FrameStats,
-			ChanID:  0,
-			Payload: data,
-		}
+		frame := hub.Frame{Type: hub.FrameStats, ChanID: 0, Payload: data}
 
 		c.mu.Lock()
 		for id, s := range c.senders {
@@ -149,6 +181,59 @@ func (c *Collector) run(ctx context.Context) {
 		}
 		c.mu.Unlock()
 	}
+}
+
+// snapshotToDelta returns a StatsDelta containing only the fields of cur that
+// differ from prev. Pass a zero prev to get a delta with all fields set (full
+// snapshot equivalent).
+func snapshotToDelta(cur, prev Snapshot) StatsDelta {
+	d := StatsDelta{}
+
+	// Always send the rapidly-changing fields.
+	d.CPU = &cur.CPU
+	d.NetRxRate = &cur.NetRxRate
+	d.NetTxRate = &cur.NetTxRate
+	d.Uptime = &cur.Uptime
+
+	// Send slowly-changing fields only when they differ.
+	if cur.RAMUsed != prev.RAMUsed {
+		d.RAMUsed = &cur.RAMUsed
+	}
+	if cur.DiskUsed != prev.DiskUsed {
+		d.DiskUsed = &cur.DiskUsed
+	}
+	// loadAvg: compare element-wise; send if any value changed.
+	if !loadAvgEqual(cur.LoadAvg, prev.LoadAvg) {
+		d.LoadAvg = cur.LoadAvg
+	}
+
+	// Send static fields only when they differ from prev (effectively once).
+	if cur.RAMTotal != prev.RAMTotal {
+		d.RAMTotal = &cur.RAMTotal
+	}
+	if cur.DiskTotal != prev.DiskTotal {
+		d.DiskTotal = &cur.DiskTotal
+	}
+	if cur.Kernel != prev.Kernel {
+		d.Kernel = &cur.Kernel
+	}
+	if cur.Hostname != prev.Hostname {
+		d.Hostname = &cur.Hostname
+	}
+
+	return d
+}
+
+func loadAvgEqual(a, b []float64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Collector) collect(prevCPU *cpuSample, prevNet *netSample) (Snapshot, error) {

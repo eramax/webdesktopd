@@ -5,8 +5,8 @@ command="/usr/bin/webdesktopd"
 command_user="webdesktopd:webdesktopd"
 command_background=true
 pidfile="/run/${RC_SVCNAME}.pid"
-output_log="/var/log/webdesktopd.log"
-error_log="/var/log/webdesktopd.log"
+output_logger="logger -t webdesktopd -p daemon.info"
+error_logger="logger -t webdesktopd -p daemon.err"
 
 [ -f /etc/webdesktopd/env ] && . /etc/webdesktopd/env
 

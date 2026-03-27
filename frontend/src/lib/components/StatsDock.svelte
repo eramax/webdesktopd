@@ -33,7 +33,11 @@
     _client.registerBroadcast('stats-dock', (frame) => {
       if (frame.type === FrameType.Stats) {
         try {
-          stats = decodeJSON<Stats>(frame.payload);
+          // Frames are deltas: only changed fields are present.
+          // Merge into existing state so static fields (kernel, hostname,
+          // ramTotal, diskTotal) are preserved between ticks.
+          const delta = decodeJSON<Partial<Stats>>(frame.payload);
+          stats = stats ? { ...stats, ...delta } : (delta as Stats);
         } catch {
           // ignore malformed stats
         }
