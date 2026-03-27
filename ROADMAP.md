@@ -234,3 +234,17 @@
   - **Token-in-URL auth**: `?_t=JWT` query param accepted as alternative to `wdd_token` cookie — more reliable in iframes where cookie delivery can be blocked by same-site rules or browser policies; `_t` param stripped before forwarding to upstream
   - `PortProxy.svelte`: `proxyURL()` now embeds `?_t={token}` in all iframe/link URLs
 - Full e2e run: 43 PASS, 6 SKIP (PTY), 0 FAIL
+
+### Session 12 (2026-03-27)
+- GitHub Actions release workflow + nfpm packaging fixes:
+  - `release.yml`: switch from `actions/setup-node` + npm to `oven-sh/setup-bun@v2` + `bun install` (no `package-lock.json` in repo); add `mkdir -p dist` before `go build`
+  - `nfpm.yaml`: add explicit `/etc/webdesktopd` dir entry (`mode: 0750`); remove `libc6` dep from `.deb` (binary is fully static, `CGO_ENABLED=0`); add `mode: 0644` to `webdesktopd.service`
+  - `postinstall.sh`: fix Alpine group/user creation order (`addgroup` before `adduser -G`); use `groupadd`/`addgroup` to detect Debian vs Alpine; add `|| true` to all `chown`/`chmod` calls so a failed user creation doesn't abort install under `set -e`
+  - `webdesktopd.openrc`: replace `output_log`/`error_log` file paths with `output_logger`/`error_logger` using syslog — fixes `Permission denied` crash since `start-stop-daemon` tried to open the log file as the `webdesktopd` user before the file existed
+- Stats delta updates (`internal/stats/collector.go`):
+  - Add `StatsDelta` struct (pointer fields + `omitempty`); send via `FrameStats` each tick
+  - `snapshotToDelta()`: always sends all displayed numeric fields every tick; only omits `kernel`/`hostname` strings when unchanged — prevents `NaN undefined` that occurred when `StatsDock` mounted after the first full-snapshot tick
+  - Root cause of NaN: `Collector.Add()` sends immediate snapshot before `StatsDock.registerBroadcast()` is called (component not mounted yet); subsequent ticks omitted static fields as "unchanged"; frontend received `undefined` for `ramTotal`/`diskTotal`/`kernel`/`hostname`
+  - `StatsDock.svelte`: merge delta into cached state (`{...stats, ...delta}`) so strings persist across ticks
+- `.gitignore`: added `dist/` (local nfpm test output)
+- Full e2e run: 45 PASS, 6 SKIP (PTY), 0 FAIL

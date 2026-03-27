@@ -1,5 +1,6 @@
 # Build output
 /webdesktopd
+/dist/
 /tmp/
 
 # Frontend build artifacts
