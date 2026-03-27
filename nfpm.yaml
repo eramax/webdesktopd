@@ -39,7 +39,7 @@ contents:
     file_info:
       mode: 0640
 
-# ── Lifecycle scripts (deb/rpm only — apk does not support these hooks) ────────
+# ── Lifecycle scripts (global — applies to deb, rpm, apk) ─────────────────────
 scripts:
   postinstall: packaging/postinstall.sh
   preremove: packaging/preremove.sh
@@ -48,12 +48,8 @@ scripts:
 deb:
   fields:
     Depends: "libc6 (>= 2.17)"
-  scripts:
-    postinstall: packaging/postinstall.sh
-    preremove: packaging/preremove.sh
+  # deb.scripts only supports debconf fields: rules, templates, config
+  # lifecycle hooks (postinstall/preremove) go in the top-level scripts block
 
 # ── Alpine-specific ────────────────────────────────────────────────────────────
-apk:
-  scripts:
-    preupgrade: packaging/preupgrade.sh
-    postupgrade: packaging/postupgrade.sh
+apk: {}
