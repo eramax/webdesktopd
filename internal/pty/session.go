@@ -57,11 +57,11 @@ type Session struct {
 }
 
 // lookupLoginShell returns the login shell for a user by reading /etc/passwd.
-// Falls back to /bin/bash on any error.
+// Falls back to /bin/sh on any error (present on all POSIX systems including Alpine).
 func lookupLoginShell(username string) string {
 	f, err := os.Open("/etc/passwd")
 	if err != nil {
-		return "/bin/bash"
+		return "/bin/sh"
 	}
 	defer f.Close()
 
@@ -80,11 +80,11 @@ func lookupLoginShell(username string) string {
 			}
 		}
 	}
-	return "/bin/bash"
+	return "/bin/sh"
 }
 
 // New spawns a shell as the given Unix user in a PTY.
-// shell defaults to the user's login shell from /etc/passwd (or /bin/bash).
+// shell defaults to the user's login shell from /etc/passwd (or /bin/sh).
 // cwd defaults to the user's home directory.
 func New(chanID uint16, username, shell, cwd string) (*Session, error) {
 	u, err := user.Lookup(username)

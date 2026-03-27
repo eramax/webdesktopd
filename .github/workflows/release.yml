@@ -1,8 +1,9 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write # needed to upload release assets
@@ -37,7 +38,7 @@ jobs:
           GOARCH: amd64
         run: |
           mkdir -p dist
-          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
           go build \
             -trimpath \
@@ -56,14 +57,14 @@ jobs:
 
       - name: Create .deb package
         env:
-          VERSION: ${{ github.event.release.tag_name }}
+          VERSION: ${{ github.ref_name }}
         run: |
           export VERSION="${VERSION#v}"
           nfpm package --config nfpm.yaml --packager deb --target dist/
 
       - name: Create .apk package (Alpine / musl)
         env:
-          VERSION: ${{ github.event.release.tag_name }}
+          VERSION: ${{ github.ref_name }}
         run: |
           export VERSION="${VERSION#v}"
           nfpm package --config nfpm.yaml --packager apk --target dist/
@@ -72,6 +73,8 @@ jobs:
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: false
           files: |
             dist/webdesktopd
             dist/*.deb

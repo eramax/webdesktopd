@@ -2,7 +2,6 @@
 
 description="webdesktopd – persistent web desktop daemon"
 command="/usr/bin/webdesktopd"
-command_user="webdesktopd:webdesktopd"
 command_background=true
 pidfile="/run/${RC_SVCNAME}.pid"
 output_logger="logger -t webdesktopd -p daemon.info"

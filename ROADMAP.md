@@ -235,6 +235,16 @@
   - `PortProxy.svelte`: `proxyURL()` now embeds `?_t={token}` in all iframe/link URLs
 - Full e2e run: 43 PASS, 6 SKIP (PTY), 0 FAIL
 
+### Session 13 (2026-03-27)
+- Fixed Alpine VPS runtime failures:
+  - `webdesktopd.openrc`: removed `command_user="webdesktopd:webdesktopd"` — OpenRC has no `AmbientCapabilities` support; daemon now runs as root so `CAP_SETUID`/`CAP_SETGID` are available for PTY privilege drop and file operations work as root
+  - `pty/session.go`: changed shell fallback from `/bin/bash` → `/bin/sh` (bash not installed by default on Alpine; `/bin/sh` is always present via busybox)
+  - Root cause: `fork/exec /bin/bash: operation not permitted` was a `EPERM` from `setuid()` failing (no capability), not a missing-binary error
+  - File manager `open /root: permission denied` — same root cause: daemon ran as `webdesktopd` user; fixed by running as root
+- Release workflow overhaul:
+  - `release.yml`: trigger changed from `on: release: types: [published]` to `on: push: tags: ['v*']`; all `github.event.release.tag_name` refs replaced with `github.ref_name`; `softprops/action-gh-release@v2` now gets `tag_name` so it auto-creates the GitHub Release from the pushed tag
+  - `release.sh` (new): bumps minor version (`vMAJOR.MINOR+1`), pushes branch, creates annotated tag with user-supplied description (becomes release body), pushes tag → triggers workflow automatically
+
 ### Session 12 (2026-03-27)
 - GitHub Actions release workflow + nfpm packaging fixes:
   - `release.yml`: switch from `actions/setup-node` + npm to `oven-sh/setup-bun@v2` + `bun install` (no `package-lock.json` in repo); add `mkdir -p dist` before `go build`
