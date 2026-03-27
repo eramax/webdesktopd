@@ -235,6 +235,12 @@
   - `PortProxy.svelte`: `proxyURL()` now embeds `?_t={token}` in all iframe/link URLs
 - Full e2e run: 43 PASS, 6 SKIP (PTY), 0 FAIL
 
+### Session 14 (2026-03-27)
+- Fixed HTTP proxy for WebSocket-heavy apps (VS Code server, etc.):
+  - **WebSocket upgrade relay**: `handleHTTPProxy` now detects `Upgrade: websocket` header and calls `proxyWebSocket` instead of `httputil.ReverseProxy`; raw TCP dial to upstream + hijack browser conn + bidirectional `io.Copy` relay; the full WS handshake (101 Switching Protocols + frames) is forwarded verbatim
+  - **Strip iframe-blocking headers**: `ModifyResponse` now deletes `X-Frame-Options` and removes `frame-ancestors` directive from `Content-Security-Policy` — previously VS Code's workbench page blocked iframe embedding after the login redirect
+  - **Strip `wdd_token` from upstream cookies**: Director now calls `stripProxyCookie` to remove `wdd_token` from the Cookie header before forwarding so the internal auth cookie doesn't leak to proxied applications
+
 ### Session 13 (2026-03-27)
 - Fixed Alpine VPS runtime failures:
   - `webdesktopd.openrc`: removed `command_user="webdesktopd:webdesktopd"` — OpenRC has no `AmbientCapabilities` support; daemon now runs as root so `CAP_SETUID`/`CAP_SETGID` are available for PTY privilege drop and file operations work as root

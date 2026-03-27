@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -796,17 +797,34 @@ func (s *Server) handleHTTPProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// WebSocket upgrades cannot go through httputil.ReverseProxy — proxy them
+	// as a raw TCP relay instead so VS Code and other WS-heavy apps work.
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		s.proxyWebSocket(w, r, port, rest)
+		return
+	}
+
 	proxy := httputil.NewSingleHostReverseProxy(target)
 
-	// Strip Accept-Encoding so the upstream always returns uncompressed content.
-	// This lets ModifyResponse safely read and rewrite HTML bodies.
+	// Strip Accept-Encoding (upstream must return plain text so ModifyResponse
+	// can safely read and rewrite HTML bodies) and wdd_token (internal auth
+	// cookie that must not leak to the upstream application).
 	origDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		origDirector(req)
 		req.Header.Del("Accept-Encoding")
+		if cookie := req.Header.Get("Cookie"); cookie != "" {
+			req.Header.Set("Cookie", stripProxyCookie(cookie, "wdd_token"))
+		}
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		// Strip headers that prevent iframe embedding.
+		resp.Header.Del("X-Frame-Options")
+		if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
+			resp.Header.Set("Content-Security-Policy", removeCSPDirective(csp, "frame-ancestors"))
+		}
+
 		// Rewrite Location headers so redirects stay within the proxy path.
 		if loc := resp.Header.Get("Location"); loc != "" {
 			if u, err2 := url.Parse(loc); err2 == nil {
@@ -853,4 +871,107 @@ func (s *Server) handleHTTPProxy(w http.ResponseWriter, r *http.Request) {
 	r2.Host = "127.0.0.1:" + port
 
 	proxy.ServeHTTP(w, r2)
+}
+
+// proxyWebSocket relays a WebSocket upgrade request to the upstream by raw TCP,
+// forwarding the full handshake and then streaming both directions verbatim.
+// This handles apps like VS Code server that use WS extensively.
+func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, port, path string) {
+	upConn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, 10*time.Second)
+	if err != nil {
+		http.Error(w, "upstream unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	// Build the upgrade request path.
+	upPath := path
+	if r.URL.RawQuery != "" {
+		upPath += "?" + r.URL.RawQuery
+	}
+
+	// Reconstruct the HTTP/1.1 upgrade request and write it to the upstream conn.
+	upReq, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:"+port+upPath, nil)
+	if err != nil {
+		upConn.Close()
+		http.Error(w, "bad upstream request", http.StatusInternalServerError)
+		return
+	}
+	for k, vs := range r.Header {
+		if !strings.EqualFold(k, "host") && !strings.EqualFold(k, "cookie") {
+			upReq.Header[k] = vs
+		}
+	}
+	upReq.Host = "127.0.0.1:" + port
+	// Forward cookies except wdd_token.
+	var cookieParts []string
+	for _, c := range r.Cookies() {
+		if c.Name != "wdd_token" {
+			cookieParts = append(cookieParts, c.Name+"="+c.Value)
+		}
+	}
+	if len(cookieParts) > 0 {
+		upReq.Header.Set("Cookie", strings.Join(cookieParts, "; "))
+	}
+	if err := upReq.Write(upConn); err != nil {
+		upConn.Close()
+		http.Error(w, "upstream write error", http.StatusBadGateway)
+		return
+	}
+
+	// Hijack the browser connection so we can relay raw bytes in both directions.
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		upConn.Close()
+		http.Error(w, "hijack unsupported", http.StatusInternalServerError)
+		return
+	}
+	brConn, brBuf, err := hj.Hijack()
+	if err != nil {
+		upConn.Close()
+		slog.Warn("ws proxy: hijack failed", "port", port, "err", err)
+		return
+	}
+
+	// Close both connections once either side stops.
+	var once sync.Once
+	closeBoth := func() {
+		once.Do(func() {
+			upConn.Close()
+			brConn.Close()
+		})
+	}
+	// browser → upstream (brBuf picks up any bytes already read into the buffer)
+	go func() {
+		io.Copy(upConn, brBuf) //nolint:errcheck
+		closeBoth()
+	}()
+	// upstream → browser (101 response + WS frames)
+	io.Copy(brConn, upConn) //nolint:errcheck
+	closeBoth()
+}
+
+// stripProxyCookie removes a named cookie from a Cookie header value.
+func stripProxyCookie(cookieHeader, name string) string {
+	parts := strings.Split(cookieHeader, ";")
+	kept := parts[:0]
+	prefix := name + "="
+	for _, p := range parts {
+		if !strings.HasPrefix(strings.TrimSpace(p), prefix) {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, ";")
+}
+
+// removeCSPDirective removes a single directive (e.g. "frame-ancestors") from a
+// Content-Security-Policy header value without touching other directives.
+func removeCSPDirective(csp, directive string) string {
+	directives := strings.Split(csp, ";")
+	kept := directives[:0]
+	for _, d := range directives {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(d)), directive) {
+			kept = append(kept, d)
+		}
+	}
+	return strings.Join(kept, ";")
 }
