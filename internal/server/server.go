@@ -826,11 +826,19 @@ func (s *Server) handleHTTPProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Rewrite Location headers so redirects stay within the proxy path.
+		// Relative redirects (e.g. code-server returns "./") are resolved
+		// against the upstream request path before prepending the proxy prefix.
 		if loc := resp.Header.Get("Location"); loc != "" {
-			if u, err2 := url.Parse(loc); err2 == nil {
-				u.Scheme = ""
-				u.Host = ""
-				resp.Header.Set("Location", "/_proxy/"+port+u.String())
+			if locURL, err2 := url.Parse(loc); err2 == nil {
+				if locURL.Host == "" && !strings.HasPrefix(loc, "/") {
+					// Relative: resolve against the upstream path so that
+					// "./" on "/login" becomes "/" not "./"
+					base := &url.URL{Path: rest}
+					locURL = base.ResolveReference(locURL)
+				}
+				locURL.Scheme = ""
+				locURL.Host = ""
+				resp.Header.Set("Location", "/_proxy/"+port+locURL.String())
 			}
 		}
 		// Inject <base> tag into HTML responses so relative asset URLs resolve correctly.

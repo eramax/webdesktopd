@@ -235,6 +235,17 @@
   - `PortProxy.svelte`: `proxyURL()` now embeds `?_t={token}` in all iframe/link URLs
 - Full e2e run: 43 PASS, 6 SKIP (PTY), 0 FAIL
 
+### Session 15 (2026-03-27)
+- VS Code server (code-server) proxy fixes + e2e tests:
+  - **Relative redirect fix** (`server.go`): `ModifyResponse` now resolves relative `Location` headers (e.g. `./`) against the upstream request path before prepending `/_proxy/{port}` — previously `./` on `/login` became `/_proxy/8080./` (broken), now correctly becomes `/_proxy/8080/`
+  - `e2e/vscode_test.go` (new): three tests using `net/http` + `cookiejar` for full cookie-aware redirect following:
+    - `TestVSCodeLoginPageLoads` — login page loads, contains password form, X-Frame-Options stripped
+    - `TestVSCodeLoginSucceeds` — POST login → follows redirect chain → workbench page loads (`codeServerVersion`, `workbench.js` present), session cookie in jar
+    - `TestVSCodeUnauthRedirectsToLogin` — GET without session → redirected to `/login` (proxy doesn't bypass code-server auth)
+  - Tests skip automatically when code-server is not running on port 8080 (502 from proxy → skip)
+  - `readVSCodePassword` helper reads `~/.config/code-server/config.yaml` via SSH
+- Full e2e run: 52 PASS, 6 SKIP (PTY), 0 FAIL
+
 ### Session 14 (2026-03-27)
 - Fixed HTTP proxy for WebSocket-heavy apps (VS Code server, etc.):
   - **WebSocket upgrade relay**: `handleHTTPProxy` now detects `Upgrade: websocket` header and calls `proxyWebSocket` instead of `httputil.ReverseProxy`; raw TCP dial to upstream + hijack browser conn + bidirectional `io.Copy` relay; the full WS handshake (101 Switching Protocols + frames) is forwarded verbatim
