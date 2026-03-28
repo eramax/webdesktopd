@@ -262,6 +262,17 @@
   - `PortProxy.svelte`: `proxyURL()` now embeds `?_t={token}` in all iframe/link URLs
 - Full e2e run: 43 PASS, 6 SKIP (PTY), 0 FAIL
 
+### Session 16 (2026-03-28)
+- Made the proxy path generic and mount-friendly for future apps:
+  - `frontend/static/sw.js`: service worker now stays transparent and forwards `/_proxy/{port}/...` straight to the server-side reverse proxy instead of requiring a desktop-window bridge.
+  - `internal/server/server.go`: generic proxy mount handling now sets `X-Forwarded-*` headers, rewrites `Set-Cookie` paths to the proxy mount, injects `<base href="/_proxy/{port}/">` into HTML responses, accepts the bare mount root `/_proxy/{port}` as well as nested paths, and continues rewriting `Location` headers / stripping iframe-blocking headers. WebSocket upgrades now receive the same forwarded-prefix metadata.
+  - `e2e/proxy_bun_test.go` + `e2e/proxy_http_test.go`: added regressions for HTML base-href injection, cookie-path scoping, and direct proxy loads without the desktop bridge.
+- Verification:
+  - `cd frontend && npm run build` ✅
+  - `GOCACHE=/tmp/go-cache WEBDESKTOPD_TEST_PTY=1 go test ./internal/... -count=1` ✅
+  - `go run ./cmd/deploy --pass='max***'` ✅
+  - `GOCACHE=/tmp/go-cache WEBDESKTOPD_URL=http://localhost:19080 WEBDESKTOPD_SSH_ADDR=127.0.0.1:32233 WEBDESKTOPD_PASS='max***' go test ./e2e/... -timeout 120s` ✅
+
 ### Session 15 (2026-03-27)
 - VS Code server (code-server) proxy fixes + e2e tests:
   - **Relative redirect fix** (`server.go`): `ModifyResponse` now resolves relative `Location` headers (e.g. `./`) against the upstream request path before prepending `/_proxy/{port}` — previously `./` on `/login` became `/_proxy/8080./` (broken), now correctly becomes `/_proxy/8080/`

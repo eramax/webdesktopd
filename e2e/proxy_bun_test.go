@@ -16,12 +16,14 @@ const bunServerPort = 19866
 // bunApp is the bun serve script sent to the remote.
 // It handles several test routes used by multiple e2e test files:
 //
-//	/        – HTML page with "proxy-test-ok" marker (existing proxy tests)
-//	/api     – JSON {status,framework,port}            (existing proxy tests)
-//	/ws      – WebSocket echo server                   (proxy header/WS tests)
-//	/xfo     – response with X-Frame-Options: DENY     (proxy header/WS tests)
-//	/csp     – response with CSP frame-ancestors       (proxy header/WS tests)
-//	/cookies – echoes received Cookie header as JSON   (proxy header/WS tests)
+//	/           – HTML page with "proxy-test-ok" marker (existing proxy tests)
+//	/relative   – HTML with a relative asset link for base-href proxy tests
+//	/api        – JSON {status,framework,port}            (existing proxy tests)
+//	/ws         – WebSocket echo server                   (proxy header/WS tests)
+//	/xfo        – response with X-Frame-Options: DENY     (proxy header/WS tests)
+//	/csp        – response with CSP frame-ancestors       (proxy header/WS tests)
+//	/cookies    – echoes received Cookie header as JSON   (proxy header/WS tests)
+//	/set-cookie – returns a cookie scoped to upstream /   (proxy cookie tests)
 //
 // HTTP responses include Connection: close so the TCP read loop can detect
 // EOF and send the client a 0x10 CloseProxy frame.
@@ -38,6 +40,13 @@ const server = Bun.serve({
       return Response.json(
         { status: "ok", framework: "bun", port: %d },
         { headers: { "Connection": "close" } }
+      );
+    }
+    if (url.pathname === "/relative") {
+      return new Response(
+        "<!DOCTYPE html><html><head><title>Relative Test</title></head>" +
+        "<body><a id='api-link' href='api'>api</a></body></html>",
+        { headers: { "Content-Type": "text/html", "Connection": "close" } }
       );
     }
     if (url.pathname === "/xfo") {
@@ -57,6 +66,15 @@ const server = Bun.serve({
     if (url.pathname === "/cookies") {
       const cookie = req.headers.get("cookie") ?? "";
       return Response.json({ cookies: cookie }, { headers: { "Connection": "close" } });
+    }
+    if (url.pathname === "/set-cookie") {
+      return new Response("cookie-ok", {
+        headers: {
+          "Content-Type": "text/plain",
+          "Set-Cookie": "app_session=abc123; Path=/; HttpOnly",
+          "Connection": "close",
+        },
+      });
     }
     return new Response(
       "<!DOCTYPE html><html><head><title>Bun Test App</title></head>" +

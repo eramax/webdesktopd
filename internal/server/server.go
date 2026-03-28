@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -764,7 +765,7 @@ func (c *controlHandler) handlePortScan(_ context.Context, f hub.Frame) error {
 	})
 }
 
-var proxyPathRe = regexp.MustCompile(`^/_proxy/(\d+)(/.*)$`)
+var proxyPathRe = regexp.MustCompile(`^/_proxy/(\d+)(/.*)?$`)
 
 // handleHTTPProxy handles GET /_proxy/{port}/{path...} requests.
 // Auth: wdd_token cookie (set by the desktop page on login).
@@ -786,7 +787,7 @@ func (s *Server) handleHTTPProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	port := m[1]
-	rest := m[2] // starts with "/"
+	rest := m[2] // starts with "/" when present
 	if rest == "" {
 		rest = "/"
 	}
@@ -813,6 +814,10 @@ func (s *Server) handleHTTPProxy(w http.ResponseWriter, r *http.Request) {
 	proxy.Director = func(req *http.Request) {
 		origDirector(req)
 		req.Header.Del("Accept-Encoding")
+		req.Header.Set("X-Forwarded-Host", r.Host)
+		req.Header.Set("X-Forwarded-Prefix", "/_proxy/"+port)
+		req.Header.Set("X-Forwarded-Proto", forwardedProto(r))
+		req.Header.Set("Forwarded", fmt.Sprintf("host=%s;proto=%s", r.Host, forwardedProto(r)))
 		if cookie := req.Header.Get("Cookie"); cookie != "" {
 			req.Header.Set("Cookie", stripProxyCookie(cookie, "wdd_token"))
 		}
@@ -824,6 +829,7 @@ func (s *Server) handleHTTPProxy(w http.ResponseWriter, r *http.Request) {
 		if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
 			resp.Header.Set("Content-Security-Policy", removeCSPDirective(csp, "frame-ancestors"))
 		}
+		rewriteSetCookieHeaders(resp.Header, "/_proxy/"+port)
 
 		// Rewrite Location headers so redirects stay within the proxy path.
 		// Relative redirects (e.g. code-server returns "./") are resolved
@@ -841,8 +847,22 @@ func (s *Server) handleHTTPProxy(w http.ResponseWriter, r *http.Request) {
 				resp.Header.Set("Location", "/_proxy/"+port+locURL.String())
 			}
 		}
-		// Leave the upstream body untouched. We only rewrite headers here so the
-		// proxy stays stable for refreshes and login flows.
+
+		// Inject a base tag into HTML responses so relative assets and links
+		// resolve inside the proxy mount for generic browser apps.
+		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+		if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml+xml") {
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return err
+			}
+			resp.Body.Close()
+			body = injectBaseHref(body, "/_proxy/"+port+"/")
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.ContentLength = int64(len(body))
+			resp.Header.Del("Content-Length")
+			resp.Header.Del("Transfer-Encoding")
+		}
 		return nil
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
@@ -893,6 +913,10 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, port, pa
 			upReq.Header[k] = vs
 		}
 	}
+	upReq.Header.Set("X-Forwarded-Host", r.Host)
+	upReq.Header.Set("X-Forwarded-Prefix", "/_proxy/"+port)
+	upReq.Header.Set("X-Forwarded-Proto", forwardedProto(r))
+	upReq.Header.Set("Forwarded", fmt.Sprintf("host=%s;proto=%s", r.Host, forwardedProto(r)))
 	upReq.Host = "127.0.0.1:" + port
 	// Forward cookies except wdd_token.
 	var cookieParts []string
@@ -966,4 +990,63 @@ func removeCSPDirective(csp, directive string) string {
 		}
 	}
 	return strings.Join(kept, ";")
+}
+
+func forwardedProto(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func rewriteSetCookieHeaders(header http.Header, prefix string) {
+	values := header.Values("Set-Cookie")
+	if len(values) == 0 {
+		return
+	}
+	header.Del("Set-Cookie")
+	for _, raw := range values {
+		cookie, err := http.ParseSetCookie(raw)
+		if err != nil {
+			header.Add("Set-Cookie", raw)
+			continue
+		}
+		cookie.Domain = ""
+		cookie.Path = rewriteCookiePath(cookie.Path, prefix)
+		header.Add("Set-Cookie", cookie.String())
+	}
+}
+
+func rewriteCookiePath(path, prefix string) string {
+	if path == "" || path == "/" {
+		return strings.TrimSuffix(prefix, "/")
+	}
+	if strings.HasPrefix(path, prefix) {
+		return path
+	}
+	if strings.HasPrefix(path, "/") {
+		return strings.TrimSuffix(prefix, "/") + path
+	}
+	return strings.TrimSuffix(prefix, "/") + "/" + path
+}
+
+func injectBaseHref(body []byte, href string) []byte {
+	lower := bytes.ToLower(body)
+	if bytes.Contains(lower, []byte("<base")) {
+		return body
+	}
+	headIdx := bytes.Index(lower, []byte("<head"))
+	if headIdx == -1 {
+		return append([]byte(`<base href="`+href+`">`), body...)
+	}
+	endIdx := bytes.IndexByte(lower[headIdx:], '>')
+	if endIdx == -1 {
+		return append([]byte(`<base href="`+href+`">`), body...)
+	}
+	insertAt := headIdx + endIdx + 1
+	out := make([]byte, 0, len(body)+len(href)+20)
+	out = append(out, body[:insertAt]...)
+	out = append(out, []byte(`<base href="`+href+`">`)...)
+	out = append(out, body[insertAt:]...)
+	return out
 }

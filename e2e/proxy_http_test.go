@@ -165,6 +165,80 @@ func TestHTTPProxyDirectBunRootLoad(t *testing.T) {
 	t.Log("✓ proxied bun root loads directly without the desktop bridge")
 }
 
+// TestHTTPProxyBareMountRootLoad verifies that the bare mount root without a
+// trailing slash also routes to the upstream app.
+func TestHTTPProxyBareMountRootLoad(t *testing.T) {
+	srv, cleanup := startRemoteBunServer(t)
+	defer cleanup()
+
+	token := mustAuth(t, cfg.User, cfg.Pass)
+	u := fmt.Sprintf("%s/_proxy/%d", cfg.BaseURL, srv.port)
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.AddCookie(&http.Cookie{Name: "wdd_token", Value: token})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "proxy-test-ok") {
+		t.Fatalf("expected proxy-test-ok in bare mount response, got:\n%.300s", body)
+	}
+	t.Log("✓ bare proxy mount root loads successfully")
+}
+
+// TestHTTPProxyInjectsBaseHref verifies that HTML responses are rewritten with
+// a proxy-local base href so relative links resolve inside the mount path.
+func TestHTTPProxyInjectsBaseHref(t *testing.T) {
+	srv, cleanup := startRemoteBunServer(t)
+	defer cleanup()
+
+	token := mustAuth(t, cfg.User, cfg.Pass)
+	resp := proxyGet(t, token, srv.port, "/relative")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	want := fmt.Sprintf(`<base href="/_proxy/%d/">`, srv.port)
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("expected rewritten base href %q, got:\n%.300s", want, body)
+	}
+	t.Log("✓ proxy injects proxy-local base href into HTML responses")
+}
+
+// TestHTTPProxyScopesCookiesToMountPath verifies that Set-Cookie headers are
+// rewritten so browser cookies stay scoped to the proxy mount path.
+func TestHTTPProxyScopesCookiesToMountPath(t *testing.T) {
+	srv, cleanup := startRemoteBunServer(t)
+	defer cleanup()
+
+	token := mustAuth(t, cfg.User, cfg.Pass)
+	resp := proxyGet(t, token, srv.port, "/set-cookie")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	cookies := resp.Header.Values("Set-Cookie")
+	if len(cookies) == 0 {
+		t.Fatal("expected Set-Cookie header from upstream")
+	}
+	wantPath := fmt.Sprintf("Path=/_proxy/%d", srv.port)
+	if !strings.Contains(cookies[0], wantPath) {
+		t.Fatalf("expected rewritten cookie path %q, got %q", wantPath, cookies[0])
+	}
+	t.Log("✓ proxy scopes cookies to the mount path")
+}
+
 // TestHTTPProxyWebSocketRelay verifies that WebSocket upgrade requests are
 // relayed end-to-end through the HTTP proxy to the upstream WS server.
 // The upstream bun echo server sends back whatever message it receives.
