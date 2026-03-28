@@ -139,4 +139,6 @@
   });
 </script>
 
-<div bind:this={containerEl} class="w-full h-full overflow-hidden"></div>
+<div class="w-full h-full overflow-hidden p-2 bg-black">
+  <div bind:this={containerEl} class="w-full h-full overflow-hidden"></div>
+</div>
