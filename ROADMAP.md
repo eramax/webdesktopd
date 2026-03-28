@@ -322,3 +322,13 @@
   - `StatsDock.svelte`: merge delta into cached state (`{...stats, ...delta}`) so strings persist across ticks
 - `.gitignore`: added `dist/` (local nfpm test output)
 - Full e2e run: 45 PASS, 6 SKIP (PTY), 0 FAIL
+
+### Session 13 (2026-03-28)
+- UI redesign: unified sidebar layout across all three apps
+  - `session.svelte.ts`: removed `fileManagerOpen`, `proxyManagerOpen`, `openFileManager()`, `closeFileManager()`, `openProxyManager()`, `closeProxyManager()`; added `pinnedTerminals` state, `pinTerminal()`, `unpinTerminal()`; `removePTYChannel()` now clears pinned entry; `logout()` resets `pinnedTerminals`
+  - `TerminalApp.svelte` (new component): extracted terminal app from `+page.svelte`; left sidebar (w-44) with pinned/unpinned sections, inline rename on double-click, pin/unpin button per tab, close button; terminal instances absolutely positioned behind visibility toggle
+  - `Dock.svelte`: simplified to 3 app icons (terminal/files/proxy) + system tray (stats popup + clock); removed running-windows strip; stats popup now triggered from tray button
+  - `FileManager.svelte`: added left sidebar (w-44) with panel management (add/switch/close/rename panels), pinned paths, and "Pin Path" button; outer layout changed from `flex-col` to `flex`; right column wrapped in `flex-1 flex-col min-w-0 relative` div; `navigate()` auto-updates active panel label; `$effect` initializes first panel on mount
+  - `PortProxy.svelte`: sidebar width changed from `w-64` to `w-44` to match unified design
+  - `+page.svelte` (desktop): imports `TerminalApp` instead of `Terminal`; passes pin/unpin callbacks; `saveState` includes `pinnedTerminals`; session-sync frame now restores `pinnedTerminals`; all three apps always mounted, toggled via visibility
+- e2e run: all 29 non-PTY tests PASS

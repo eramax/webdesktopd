@@ -1,41 +1,24 @@
 <script lang="ts">
   import type { WSClient } from '$lib/client';
   import { FrameType, decodeJSON } from '$lib/protocol';
-  import type { PTYChannel } from '$lib/session.svelte';
 
   interface Props {
     client: WSClient;
-    channels: PTYChannel[];
-    activeChannel: number | null;
     activeApp: 'terminal' | 'files' | 'proxy';
-    fileManagerOpen: boolean;
-    proxyManagerOpen: boolean;
-    onNewTerminal: () => void;
-    onSelectChannel: (chanID: number) => void;
-    onCloseChannel: (chanID: number) => void;
-    onOpenFiles: () => void;
-    onCloseFiles: () => void;
-    onOpenProxy: () => void;
-    onCloseProxy: () => void;
+    onSwitchApp: (app: 'terminal' | 'files' | 'proxy') => void;
   }
 
-  let {
-    client, channels, activeChannel, activeApp, fileManagerOpen, proxyManagerOpen,
-    onNewTerminal, onSelectChannel, onCloseChannel, onOpenFiles, onCloseFiles,
-    onOpenProxy, onCloseProxy
-  }: Props = $props();
+  let { client, activeApp, onSwitchApp }: Props = $props();
 
   // ── Clock ────────────────────────────────────────────────────────────────────
 
   let now = $state(new Date());
   const clockTimer = setInterval(() => (now = new Date()), 1000);
-
   $effect(() => () => clearInterval(clockTimer));
 
   function formatTime(d: Date): string {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
-
   function formatDate(d: Date): string {
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
   }
@@ -63,11 +46,7 @@
     const _client = client;
     _client.registerBroadcast('dock-stats', (frame) => {
       if (frame.type === FrameType.Stats) {
-        try {
-          stats = decodeJSON<Stats>(frame.payload);
-        } catch {
-          // ignore malformed frames
-        }
+        try { stats = decodeJSON<Stats>(frame.payload); } catch { /* ignore */ }
       }
     });
     return () => _client.unregisterBroadcast('dock-stats');
@@ -116,68 +95,43 @@
     class="fixed bottom-12 right-2 z-50 w-80 rounded-xl bg-zinc-900 border border-zinc-700 shadow-2xl p-4 text-xs text-zinc-300 space-y-3"
     onclick={(e) => e.stopPropagation()}
   >
-    <!-- CPU -->
     <div class="space-y-1">
       <div class="flex justify-between">
         <span class="text-zinc-500 uppercase tracking-wider text-[10px]">CPU</span>
         <span class="font-mono {cpuTextColor(stats.cpu)}">{stats.cpu.toFixed(1)}%</span>
       </div>
       <div class="h-1.5 bg-zinc-700 rounded-full overflow-hidden">
-        <div
-          class="h-full rounded-full transition-all duration-300 {cpuBarColor(stats.cpu)}"
-          style="width: {Math.min(100, stats.cpu).toFixed(1)}%"
-        ></div>
+        <div class="h-full rounded-full transition-all duration-300 {cpuBarColor(stats.cpu)}" style="width: {Math.min(100, stats.cpu).toFixed(1)}%"></div>
       </div>
     </div>
-
-    <!-- RAM -->
     <div class="space-y-1">
       <div class="flex justify-between">
         <span class="text-zinc-500 uppercase tracking-wider text-[10px]">RAM</span>
         <span class="font-mono">{formatBytes(stats.ramUsed)} / {formatBytes(stats.ramTotal)}</span>
       </div>
       <div class="h-1.5 bg-zinc-700 rounded-full overflow-hidden">
-        <div
-          class="h-full rounded-full transition-all duration-300 bg-blue-500"
-          style="width: {ramPercent(stats).toFixed(1)}%"
-        ></div>
+        <div class="h-full rounded-full transition-all duration-300 bg-blue-500" style="width: {ramPercent(stats).toFixed(1)}%"></div>
       </div>
     </div>
-
-    <!-- Disk -->
     <div class="flex justify-between">
       <span class="text-zinc-500 uppercase tracking-wider text-[10px]">Disk</span>
       <span class="font-mono">{formatBytes(stats.diskUsed)} / {formatBytes(stats.diskTotal)}</span>
     </div>
-
-    <!-- Network -->
     <div class="flex justify-between">
       <span class="text-zinc-500 uppercase tracking-wider text-[10px]">Net</span>
       <span class="font-mono">↓{formatBytes(stats.netRxRate)}/s &nbsp;↑{formatBytes(stats.netTxRate)}/s</span>
     </div>
-
-    <!-- Load average -->
     {#if stats.loadAvg?.length >= 3}
       <div class="flex justify-between">
         <span class="text-zinc-500 uppercase tracking-wider text-[10px]">Load</span>
-        <span class="font-mono"
-          >{stats.loadAvg[0].toFixed(2)} &nbsp;{stats.loadAvg[1].toFixed(2)} &nbsp;{stats.loadAvg[2].toFixed(
-            2
-          )}</span
-        >
+        <span class="font-mono">{stats.loadAvg[0].toFixed(2)} &nbsp;{stats.loadAvg[1].toFixed(2)} &nbsp;{stats.loadAvg[2].toFixed(2)}</span>
       </div>
     {/if}
-
-    <!-- Uptime -->
     <div class="flex justify-between">
       <span class="text-zinc-500 uppercase tracking-wider text-[10px]">Uptime</span>
       <span class="font-mono">{formatUptime(stats.uptime)}</span>
     </div>
-
-    <!-- Separator -->
     <div class="border-t border-zinc-700"></div>
-
-    <!-- Hostname / kernel -->
     {#if stats.hostname}
       <div class="flex justify-between">
         <span class="text-zinc-500 uppercase tracking-wider text-[10px]">Host</span>
@@ -196,47 +150,43 @@
 <!-- Dock bar -->
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 <div
-  class="shrink-0 h-11 bg-zinc-900/95 backdrop-blur border-t border-zinc-800 flex items-center gap-1 px-2 select-none"
+  class="shrink-0 h-11 bg-zinc-900/95 backdrop-blur border-t border-zinc-800 flex items-center px-2 select-none"
   onclick={() => (statsOpen = false)}
 >
-  <!-- ── App launchers ──────────────────────────────────────────────────── -->
+  <!-- ── App icons ── -->
   <div class="flex items-center gap-0.5 pr-2 border-r border-zinc-700">
-    <!-- Terminal launcher -->
+    <!-- Terminal -->
     <button
-      onclick={(e) => { e.stopPropagation(); onNewTerminal(); }}
-      title="New Terminal"
-      class="w-9 h-9 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700 transition"
+      onclick={(e) => { e.stopPropagation(); onSwitchApp('terminal'); }}
+      title="Terminal"
+      class="w-9 h-9 flex items-center justify-center rounded-lg transition
+             {activeApp === 'terminal' ? 'bg-blue-600 text-white' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700'}"
     >
-      <!-- Terminal icon: >_ -->
       <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <rect x="2" y="3" width="20" height="15" rx="2" />
-        <polyline points="8 10 12 14 8 18" />
-        <line x1="16" y1="18" x2="12" y2="18" />
+        <rect x="2" y="3" width="20" height="15" rx="2"/>
+        <polyline points="8 10 12 14 8 18"/>
+        <line x1="16" y1="18" x2="12" y2="18"/>
       </svg>
     </button>
 
-    <!-- File manager launcher -->
+    <!-- Files -->
     <button
+      onclick={(e) => { e.stopPropagation(); onSwitchApp('files'); }}
       title="File Manager"
-      onclick={(e) => { e.stopPropagation(); onOpenFiles(); }}
       class="w-9 h-9 flex items-center justify-center rounded-lg transition
-             {fileManagerOpen && activeApp === 'files'
-               ? 'bg-blue-600 text-white'
-               : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700'}"
+             {activeApp === 'files' ? 'bg-blue-600 text-white' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700'}"
     >
       <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
       </svg>
     </button>
 
-    <!-- Port Proxy launcher -->
+    <!-- Proxy -->
     <button
+      onclick={(e) => { e.stopPropagation(); onSwitchApp('proxy'); }}
       title="Port Proxy"
-      onclick={(e) => { e.stopPropagation(); onOpenProxy(); }}
       class="w-9 h-9 flex items-center justify-center rounded-lg transition
-             {proxyManagerOpen && activeApp === 'proxy'
-               ? 'bg-blue-600 text-white'
-               : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700'}"
+             {activeApp === 'proxy' ? 'bg-blue-600 text-white' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700'}"
     >
       <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10"/>
@@ -246,102 +196,11 @@
     </button>
   </div>
 
-  <!-- ── Running windows ───────────────────────────────────────────────── -->
-  <div class="flex items-center gap-1 flex-1 min-w-0 px-1 overflow-x-auto">
-    {#each channels as ch (ch.chanID)}
-      <div class="group relative shrink-0">
-        <button
-          onclick={(e) => { e.stopPropagation(); onSelectChannel(ch.chanID); }}
-          class="flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs transition max-w-36
-            {activeApp === 'terminal' && activeChannel === ch.chanID
-              ? 'bg-blue-600 text-white'
-              : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
-        >
-          <svg class="w-3.5 h-3.5 shrink-0 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="3" width="20" height="15" rx="2" />
-            <polyline points="8 10 12 14 8 18" />
-            <line x1="16" y1="18" x2="12" y2="18" />
-          </svg>
-          <span class="truncate">{ch.label}</span>
-        </button>
+  <!-- Spacer -->
+  <div class="flex-1"></div>
 
-        <button
-          onclick={(e) => { e.stopPropagation(); onCloseChannel(ch.chanID); }}
-          title="Close"
-          class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-zinc-600 hover:bg-red-500 text-zinc-200
-                 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
-        >
-          <svg class="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
-    {/each}
-
-    <!-- File Manager window button (shown when open) -->
-    {#if fileManagerOpen}
-      <div class="group relative shrink-0">
-        <button
-          onclick={(e) => { e.stopPropagation(); onOpenFiles(); }}
-          class="flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs transition
-            {activeApp === 'files'
-              ? 'bg-blue-600 text-white'
-              : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
-        >
-          <svg class="w-3.5 h-3.5 shrink-0 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          </svg>
-          <span>Files</span>
-        </button>
-
-        <button
-          onclick={(e) => { e.stopPropagation(); onCloseFiles(); }}
-          title="Close"
-          class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-zinc-600 hover:bg-red-500 text-zinc-200
-                 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
-        >
-          <svg class="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
-    {/if}
-
-    <!-- Proxy Manager window button (shown when open) -->
-    {#if proxyManagerOpen}
-      <div class="group relative shrink-0">
-        <button
-          onclick={(e) => { e.stopPropagation(); onOpenProxy(); }}
-          class="flex items-center gap-1.5 h-8 px-3 rounded-lg text-xs transition
-            {activeApp === 'proxy'
-              ? 'bg-blue-600 text-white'
-              : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
-        >
-          <svg class="w-3.5 h-3.5 shrink-0 opacity-75" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="2" y1="12" x2="22" y2="12"/>
-            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-          </svg>
-          <span>Proxy</span>
-        </button>
-
-        <button
-          onclick={(e) => { e.stopPropagation(); onCloseProxy(); }}
-          title="Close"
-          class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-zinc-600 hover:bg-red-500 text-zinc-200
-                 flex items-center justify-center opacity-0 group-hover:opacity-100 transition"
-        >
-          <svg class="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
-    {/if}
-  </div>
-
-  <!-- ── System tray ───────────────────────────────────────────────────── -->
+  <!-- ── System tray ── -->
   <div class="flex items-center gap-2 pl-2 border-l border-zinc-700 shrink-0">
-    <!-- Stats toggle button -->
     <button
       onclick={(e) => { e.stopPropagation(); statsOpen = !statsOpen; }}
       title="System stats"
@@ -349,21 +208,15 @@
              {statsOpen ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'}"
     >
       {#if stats}
-        <span class="font-mono {cpuTextColor(stats.cpu)} tabular-nums">
-          CPU&nbsp;{stats.cpu.toFixed(0)}%
-        </span>
+        <span class="font-mono {cpuTextColor(stats.cpu)} tabular-nums">CPU&nbsp;{stats.cpu.toFixed(0)}%</span>
         <span class="text-zinc-600">·</span>
-        <span class="font-mono tabular-nums">
-          {formatBytes(stats.ramUsed, 0)}
-        </span>
+        <span class="font-mono tabular-nums">{formatBytes(stats.ramUsed, 0)}</span>
       {:else}
         <svg class="w-4 h-4 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
         </svg>
       {/if}
     </button>
-
-    <!-- Clock -->
     <div class="text-right leading-tight px-1">
       <div class="text-xs font-mono text-zinc-300 tabular-nums">{formatTime(now)}</div>
       <div class="text-[10px] text-zinc-600">{formatDate(now)}</div>

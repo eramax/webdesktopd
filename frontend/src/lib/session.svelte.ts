@@ -20,22 +20,20 @@ class SessionStore {
   connectCount = $state(0);
   ptyChannels = $state<PTYChannel[]>([]);
   activeChannel = $state<number | null>(null);
+  /** chanIDs of pinned terminal tabs. */
+  pinnedTerminals = $state<number[]>([]);
 
   /** User's home directory, set from session sync frame. */
   homeDir = $state<string | null>(null);
-  /** Which app occupies the main area: 'terminal', 'files', or 'proxy'. */
+  /** Which app occupies the main area. */
   activeApp = $state<'terminal' | 'files' | 'proxy'>('terminal');
-  /** Whether the file manager is open. */
-  fileManagerOpen = $state(false);
 
   /** Active port proxy channels. */
   proxyChannels = $state<ProxyChannel[]>([]);
-  /** Whether the port proxy panel is open. */
-  proxyManagerOpen = $state(false);
   /** Active proxy chanID shown in proxy panel. */
   activeProxyChanID = $state<number | null>(null);
 
-  /** Current wallpaper CSS value (background shorthand). */
+  /** Current wallpaper CSS value. */
   wallpaper = $state<string>('');
 
   private _nextID = 1;
@@ -43,7 +41,6 @@ class SessionStore {
   login(username: string, token: string): void {
     this.token = token;
     this.username = username;
-
     const ws = new WSClient(token);
     ws.onOpen = () => {
       this.connected = true;
@@ -64,40 +61,24 @@ class SessionStore {
     this.connectCount = 0;
     this.ptyChannels = [];
     this.activeChannel = null;
+    this.pinnedTerminals = [];
     this.homeDir = null;
     this.activeApp = 'terminal';
-    this.fileManagerOpen = false;
     this.proxyChannels = [];
-    this.proxyManagerOpen = false;
     this.activeProxyChanID = null;
     this.wallpaper = '';
     this._nextID = 1;
-    // Clear auth cookie
     document.cookie = 'wdd_token=; path=/; max-age=0';
   }
 
-  openFileManager(): void {
-    this.fileManagerOpen = true;
-    this.activeApp = 'files';
-  }
-
-  closeFileManager(): void {
-    this.fileManagerOpen = false;
-    if (this.activeApp === 'files') {
-      this.activeApp = 'terminal';
+  pinTerminal(chanID: number): void {
+    if (!this.pinnedTerminals.includes(chanID)) {
+      this.pinnedTerminals = [...this.pinnedTerminals, chanID];
     }
   }
 
-  openProxyManager(): void {
-    this.proxyManagerOpen = true;
-    this.activeApp = 'proxy';
-  }
-
-  closeProxyManager(): void {
-    this.proxyManagerOpen = false;
-    if (this.activeApp === 'proxy') {
-      this.activeApp = this.ptyChannels.length > 0 ? 'terminal' : 'files';
-    }
+  unpinTerminal(chanID: number): void {
+    this.pinnedTerminals = this.pinnedTerminals.filter(id => id !== chanID);
   }
 
   addPTYChannel(chanID: number, label?: string): void {
@@ -109,6 +90,7 @@ class SessionStore {
 
   removePTYChannel(chanID: number): void {
     this.ptyChannels = this.ptyChannels.filter((c) => c.chanID !== chanID);
+    this.pinnedTerminals = this.pinnedTerminals.filter(id => id !== chanID);
     if (this.activeChannel === chanID) {
       this.activeChannel = this.ptyChannels[0]?.chanID ?? null;
     }

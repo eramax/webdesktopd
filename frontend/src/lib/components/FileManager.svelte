@@ -41,6 +41,106 @@
 
   type IconKind = 'folder' | 'image' | 'video' | 'audio' | 'archive' | 'code' | 'pdf' | 'file';
 
+  // ── Panel state ───────────────────────────────────────────────────────────
+
+  interface PanelSnapshot {
+    id: number;
+    label: string;
+    path: string;
+    entries: FileInfo[];
+  }
+
+  let _panelCounter = $state(0);
+  let panels = $state<PanelSnapshot[]>([]);
+  let activePanelId = $state(0);
+  let pinnedPanelIds = $state<number[]>([]);
+  let renamingPanelId = $state<number | null>(null);
+  let renamePanelValue = $state('');
+
+  let pinnedPanels = $derived(panels.filter(p => pinnedPanelIds.includes(p.id)));
+  let unpinnedPanels = $derived(panels.filter(p => !pinnedPanelIds.includes(p.id)));
+
+  function labelFromPath(p: string): string {
+    const seg = p.replace(/\/$/, '').split('/').filter(Boolean).pop();
+    return seg ?? '/';
+  }
+
+  function addPanel(path: string) {
+    // Save current panel state first
+    saveCurrent();
+    const id = ++_panelCounter;
+    panels = [...panels, { id, label: labelFromPath(path), path, entries: [] }];
+    activePanelId = id;
+    currentPath = path;
+    entries = [];
+    selected = new Set();
+    lastSelected = null;
+    requestList(path);
+  }
+
+  function switchToPanel(id: number) {
+    if (id === activePanelId) return;
+    saveCurrent();
+    activePanelId = id;
+    const target = panels.find(p => p.id === id);
+    if (!target) return;
+    currentPath = target.path;
+    entries = target.entries;
+    selected = new Set();
+    lastSelected = null;
+    renamingName = null;
+    contextMenu = null;
+    requestList(currentPath);
+  }
+
+  function closePanel(id: number) {
+    if (panels.length <= 1) return;
+    const idx = panels.findIndex(p => p.id === id);
+    panels = panels.filter(p => p.id !== id);
+    pinnedPanelIds = pinnedPanelIds.filter(pid => pid !== id);
+    if (activePanelId === id) {
+      const next = panels[Math.min(idx, panels.length - 1)];
+      if (next) {
+        activePanelId = next.id;
+        currentPath = next.path;
+        entries = next.entries;
+        selected = new Set();
+        lastSelected = null;
+        requestList(currentPath);
+      }
+    }
+  }
+
+  function saveCurrent() {
+    const idx = panels.findIndex(p => p.id === activePanelId);
+    if (idx >= 0) {
+      panels[idx] = { ...panels[idx], path: currentPath, entries: [...entries] };
+    }
+  }
+
+  function pinPanel(id: number) {
+    if (!pinnedPanelIds.includes(id)) {
+      pinnedPanelIds = [...pinnedPanelIds, id];
+    }
+  }
+
+  function unpinPanel(id: number) {
+    pinnedPanelIds = pinnedPanelIds.filter(pid => pid !== id);
+  }
+
+  function startRenamePanel(id: number, label: string) {
+    renamingPanelId = id;
+    renamePanelValue = label;
+  }
+
+  function commitRenamePanel() {
+    if (renamingPanelId !== null && renamePanelValue.trim()) {
+      const idx = panels.findIndex(p => p.id === renamingPanelId);
+      if (idx >= 0) panels[idx].label = renamePanelValue.trim();
+    }
+    renamingPanelId = null;
+  }
+
   // ── State ─────────────────────────────────────────────────────────────────
 
   let currentPath = $state('/');
@@ -188,6 +288,12 @@
     renamingName = null;
     contextMenu = null;
     currentPath = path;
+    // Auto-update active panel label and path
+    const idx = panels.findIndex(p => p.id === activePanelId);
+    if (idx >= 0) {
+      panels[idx].path = path;
+      panels[idx].label = labelFromPath(path);
+    }
     requestList(path);
   }
 
@@ -458,9 +564,14 @@
       }
     });
 
-    // Navigate to home on first mount once homeDir is known
+    // Initialize first panel
     const startPath = homeDir || '/';
+    const initId = 1;
+    _panelCounter = 1;
+    panels = [{ id: initId, label: labelFromPath(startPath), path: startPath, entries: [] }];
+    activePanelId = initId;
     currentPath = startPath;
+    entries = [];
     requestList(startPath);
 
     return () => _client.unregisterBroadcast('file-manager');
@@ -469,13 +580,57 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
 <div
-  class="relative flex flex-col h-full bg-zinc-950 text-zinc-200 text-sm select-none outline-none"
+  class="relative flex h-full bg-zinc-950 text-zinc-200 text-sm select-none outline-none"
   tabindex="-1"
   role="region"
   aria-label="File Manager"
   onkeydown={onKeyDown}
   onclick={() => { selected = new Set(); contextMenu = null; }}
 >
+
+  <!-- ── Left sidebar ── -->
+  <aside class="w-44 shrink-0 flex flex-col bg-zinc-900 border-r border-zinc-800 select-none" onclick={(e) => e.stopPropagation()}>
+
+    {#if pinnedPanels.length > 0}
+      <div class="px-3 pt-2.5 pb-1">
+        <span class="text-[10px] uppercase tracking-wider text-zinc-600 font-semibold">Pinned</span>
+      </div>
+      {#each pinnedPanels as panel (panel.id)}
+        {@render panelItem(panel, true)}
+      {/each}
+      <div class="mx-2 my-1.5 border-t border-zinc-800"></div>
+    {/if}
+
+    <div class="flex-1 overflow-y-auto py-1">
+      {#if unpinnedPanels.length > 0}
+        {#if pinnedPanels.length > 0}
+          <div class="px-3 pb-1">
+            <span class="text-[10px] uppercase tracking-wider text-zinc-600 font-semibold">Panels</span>
+          </div>
+        {/if}
+        {#each unpinnedPanels as panel (panel.id)}
+          {@render panelItem(panel, false)}
+        {/each}
+      {:else if pinnedPanels.length === 0}
+        <p class="px-3 py-4 text-xs text-zinc-600 text-center">No panels</p>
+      {/if}
+    </div>
+
+    <div class="p-2 border-t border-zinc-800">
+      <button
+        onclick={() => addPanel(currentPath)}
+        class="w-full flex items-center gap-1.5 px-2 py-1.5 rounded text-xs text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 transition"
+      >
+        <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+        </svg>
+        New Panel
+      </button>
+    </div>
+  </aside>
+
+  <!-- ── Right: toolbar + file listing ── -->
+  <div class="flex-1 flex flex-col min-w-0 relative">
 
   <!-- ── Toolbar ── -->
   <div class="flex items-center gap-1 px-2 py-1.5 bg-zinc-900 border-b border-zinc-800 flex-wrap shrink-0">
@@ -734,9 +889,73 @@
       {/each}
     </div>
   {/if}
+  </div><!-- end right column -->
 </div>
 
 <!-- ── Snippets ── -->
+
+{#snippet panelItem(panel: PanelSnapshot, isPinned: boolean)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="group mx-1.5 mb-0.5">
+    <div class="flex items-center rounded transition
+      {activePanelId === panel.id
+        ? 'bg-blue-600/25 text-zinc-100 ring-1 ring-inset ring-blue-600/40'
+        : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'}">
+      <div class="pl-2 py-1.5 shrink-0 opacity-60">
+        <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+      </div>
+      {#if renamingPanelId === panel.id}
+        <!-- svelte-ignore a11y_autofocus -->
+        <input
+          type="text"
+          autofocus
+          bind:value={renamePanelValue}
+          class="flex-1 min-w-0 mx-1.5 my-1 text-xs bg-zinc-800 border border-blue-500 rounded px-1.5 py-0.5 outline-none text-zinc-100"
+          onclick={(e) => e.stopPropagation()}
+          onblur={commitRenamePanel}
+          onkeydown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') commitRenamePanel();
+            if (e.key === 'Escape') { renamingPanelId = null; }
+          }}
+        />
+      {:else}
+        <button
+          class="flex-1 min-w-0 text-left text-xs py-1.5 pl-1.5 pr-1 truncate"
+          onclick={() => switchToPanel(panel.id)}
+          ondblclick={() => { if (activePanelId === panel.id) startRenamePanel(panel.id, panel.label); }}
+          title={panel.path}
+        >{panel.label}</button>
+      {/if}
+      {#if renamingPanelId !== panel.id}
+        <div class="flex items-center opacity-0 group-hover:opacity-100 pr-1 gap-0.5 shrink-0">
+          <button
+            onclick={(e) => { e.stopPropagation(); isPinned ? unpinPanel(panel.id) : pinPanel(panel.id); }}
+            title={isPinned ? 'Unpin' : 'Pin'}
+            class="p-0.5 rounded hover:bg-zinc-700 transition {isPinned ? 'text-yellow-400' : 'text-zinc-500 hover:text-zinc-300'}"
+          >
+            <svg class="w-3 h-3" viewBox="0 0 24 24" fill={isPinned ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="17" x2="12" y2="22"/>
+              <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/>
+            </svg>
+          </button>
+          <button
+            onclick={(e) => { e.stopPropagation(); panels.length > 1 && closePanel(panel.id); }}
+            title="Close panel"
+            class="p-0.5 rounded hover:bg-red-500/20 hover:text-red-400 text-zinc-500 transition
+                   {panels.length <= 1 ? 'opacity-30 cursor-not-allowed' : ''}"
+          >
+            <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/snippet}
 
 {#snippet fileIcon(kind: IconKind)}
   {#if kind === 'folder'}
