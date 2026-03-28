@@ -49,6 +49,7 @@ func main() {
 		JWTSecret: jwtSecret,
 		SSHAddr:   *sshAddr,
 		JWTTTL:    *jwtTTL,
+		Version:   Version,
 	}
 
 	srv := server.New(cfg)

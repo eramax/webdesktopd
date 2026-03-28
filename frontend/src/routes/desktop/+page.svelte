@@ -241,6 +241,12 @@
 
   let connected = $derived(session.connected);
   let effectiveHomeDir = $derived(session.homeDir ?? '/');
+  let appVersion = $state<string | null>(null);
+
+  fetch('/health')
+    .then(r => r.json())
+    .then((d: { version?: string }) => { if (d.version) appVersion = d.version; })
+    .catch(() => {});
 
   const wallpapers = [
     { label: 'Dark', value: '' },
@@ -264,7 +270,12 @@
 
   <!-- Top bar -->
   <header class="flex items-center justify-between px-4 py-1.5 bg-zinc-900/80 border-b border-zinc-800 shrink-0 backdrop-blur">
-    <span class="font-semibold text-zinc-200 text-sm tracking-tight">webdesktopd</span>
+    <div class="flex items-center gap-2">
+      <span class="font-semibold text-zinc-200 text-sm tracking-tight">webdesktopd</span>
+      {#if appVersion}
+        <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-500">{appVersion}</span>
+      {/if}
+    </div>
 
     <div class="flex items-center gap-3">
       <div class="flex items-center gap-0.5">

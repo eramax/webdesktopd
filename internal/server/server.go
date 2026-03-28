@@ -30,6 +30,7 @@ type Config struct {
 	JWTSecret []byte
 	SSHAddr   string
 	JWTTTL    time.Duration
+	Version   string
 }
 
 // PTYInfo describes an active PTY channel in the session sync payload.
@@ -210,7 +211,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`)) //nolint:errcheck
+		fmt.Fprintf(w, `{"status":"ok","version":%q}`, s.cfg.Version) //nolint:errcheck
 	})
 	mux.HandleFunc("/_proxy/", s.handleHTTPProxy)
 	// Serve embedded frontend for all other paths (SPA fallback).
