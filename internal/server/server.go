@@ -213,6 +213,21 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, `{"status":"ok","version":%q}`, s.cfg.Version) //nolint:errcheck
 	})
+	mux.HandleFunc("/validate", func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		if token == "" {
+			token = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		}
+		if token == "" {
+			http.Error(w, "missing token", http.StatusUnauthorized)
+			return
+		}
+		if _, err := s.auth.ValidateToken(token); err != nil {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("/_proxy/", s.handleHTTPProxy)
 	// Serve embedded frontend for all other paths (SPA fallback).
 	if s.assets != nil {

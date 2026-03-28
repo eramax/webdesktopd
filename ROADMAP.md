@@ -332,3 +332,12 @@
   - `PortProxy.svelte`: sidebar width changed from `w-64` to `w-44` to match unified design
   - `+page.svelte` (desktop): imports `TerminalApp` instead of `Terminal`; passes pin/unpin callbacks; `saveState` includes `pinnedTerminals`; session-sync frame now restores `pinnedTerminals`; all three apps always mounted, toggled via visibility
 - e2e run: all 29 non-PTY tests PASS
+- Version badge: `server.Config.Version` field; `/health` returns `{"status":"ok","version":"..."}` JSON; desktop page fetches `/health` on load and shows version in a small badge next to the app name in the top bar
+- Terminal padding: added `p-2` wrapper div around xterm container in `Terminal.svelte`
+- Reconnect fix (auth error detection):
+  - Old approach (heuristic `opened` flag + `/health` check) failed silently in practice
+  - New approach: added `/validate?token=JWT` endpoint to server; on WS close, reconnect timer now calls `_validateAndReconnect()` which POLLs `/validate` with the current token before opening a new socket; if 401 → calls `onAuthError()` and stops retrying; if network error → proceeds with reconnect as usual
+  - `client.ts`: removed `opened` flag, async close handler replaced with `_validateAndReconnect()` private method using `AbortController` with manual 3-second timeout (avoids `AbortSignal.timeout()` compatibility issues)
+  - `session.svelte.ts`: `authError` state + `onAuthError` callback wired up
+  - `+page.svelte`: `$effect` watches `session.authError` → calls `session.logout()` + `goto('/')` to redirect to login
+- e2e run: all tests PASS (29 non-PTY)

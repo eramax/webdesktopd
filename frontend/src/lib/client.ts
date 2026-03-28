@@ -54,13 +54,7 @@ export class WSClient {
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
 
-    // Track whether this specific socket ever successfully opened.
-    // If close fires before open, the server rejected the handshake (bad token
-    // or server down) rather than dropping an established connection.
-    let opened = false;
-
     ws.addEventListener('open', () => {
-      opened = true;
       this.onOpen?.();
     });
 
@@ -82,31 +76,15 @@ export class WSClient {
       }
     });
 
-    ws.addEventListener('close', async () => {
+    ws.addEventListener('close', () => {
       this.ws = null;
       this.onClose?.();
 
       if (!this.shouldReconnect) return;
 
-      if (!opened) {
-        // The handshake was rejected before the socket opened.
-        // If the server is actually up, our token is the problem.
-        try {
-          const resp = await fetch('/health', { signal: AbortSignal.timeout(3000) });
-          if (resp.ok) {
-            // Server is reachable → it rejected our token → stop retrying.
-            this.shouldReconnect = false;
-            this.onAuthError?.();
-            return;
-          }
-        } catch {
-          // Server not reachable yet — fall through and retry normally.
-        }
-      }
-
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
-        this._openSocket();
+        this._validateAndReconnect();
       }, RECONNECT_DELAY_MS);
     });
 
@@ -114,6 +92,32 @@ export class WSClient {
       this.onError?.(err);
       // The 'close' event will fire after an error, handling reconnect there.
     });
+  }
+
+  /**
+   * Before reconnecting, validate the token against the server.
+   * If /validate returns 401, the server is up but our token is invalid → auth error.
+   * If the fetch fails or returns anything else, proceed with reconnect.
+   */
+  private async _validateAndReconnect(): Promise<void> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const resp = await fetch(`/validate?token=${encodeURIComponent(this.token)}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (resp.status === 401) {
+        this.shouldReconnect = false;
+        this.onAuthError?.();
+        return;
+      }
+    } catch {
+      // Server not reachable yet or request aborted — proceed with reconnect.
+    }
+    if (this.shouldReconnect) {
+      this._openSocket();
+    }
   }
 
   /**

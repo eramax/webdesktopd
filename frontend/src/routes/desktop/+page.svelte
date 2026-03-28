@@ -84,6 +84,14 @@
     }
 
     document.cookie = `wdd_token=${session.token}; path=/; SameSite=Lax`;
+
+    // Override auth error handler here so we can use window.location for a
+    // reliable redirect (goto() is unreliable in async WS callbacks).
+    session.client.onAuthError = () => {
+      session.logout();
+      window.location.replace('/');
+    };
+
     session.client.connect();
 
     if ('serviceWorker' in navigator) {
@@ -242,13 +250,6 @@
   let connected = $derived(session.connected);
   let effectiveHomeDir = $derived(session.homeDir ?? '/');
 
-  // Redirect to login when the server rejects our token (e.g. restart with new JWT secret).
-  $effect(() => {
-    if (session.authError) {
-      session.logout();
-      goto('/');
-    }
-  });
   let appVersion = $state<string | null>(null);
 
   fetch('/health')
@@ -308,7 +309,7 @@
       {/if}
 
       <button
-        onclick={() => { session.logout(); goto('/'); }}
+        onclick={() => { session.logout(); window.location.replace('/'); }}
         class="text-xs px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-zinc-400 hover:text-zinc-100 transition"
       >
         Disconnect
