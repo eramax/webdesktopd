@@ -24,14 +24,18 @@ async function handleProxyRequest(request, port, path) {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   const desktopClient = clients.find((client) => {
     try {
-      return new URL(client.url).pathname === '/desktop';
+      const pathname = new URL(client.url).pathname;
+      return pathname === '/desktop' || pathname.startsWith('/desktop/');
     } catch {
       return false;
     }
   });
 
   if (!desktopClient) {
-    return new Response('No desktop window found. Open webdesktopd first.', { status: 503 });
+    // Fall back to the server-side reverse proxy when no desktop bridge is
+    // available. This keeps direct refresh/external loads working even if the
+    // main desktop window was closed or not yet recognized by the SW.
+    return fetch(request);
   }
 
   const method = request.method;

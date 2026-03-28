@@ -143,6 +143,28 @@ func TestHTTPProxyRefreshBunRoot(t *testing.T) {
 	t.Log("✓ proxied bun root remains loadable across refreshes")
 }
 
+// TestHTTPProxyDirectBunRootLoad verifies that a direct navigation to the
+// proxied root works without depending on the desktop websocket bridge.
+// This matches the browser behavior for opening a port in a new tab.
+func TestHTTPProxyDirectBunRootLoad(t *testing.T) {
+	srv, cleanup := startRemoteBunServer(t)
+	defer cleanup()
+
+	token := mustAuth(t, cfg.User, cfg.Pass)
+
+	resp := proxyGet(t, token, srv.port, "/")
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "proxy-test-ok") {
+		t.Fatalf("expected proxy-test-ok in direct load, got:\n%.300s", body)
+	}
+	t.Log("✓ proxied bun root loads directly without the desktop bridge")
+}
+
 // TestHTTPProxyWebSocketRelay verifies that WebSocket upgrade requests are
 // relayed end-to-end through the HTTP proxy to the upstream WS server.
 // The upstream bun echo server sends back whatever message it receives.

@@ -273,6 +273,15 @@
   - `readVSCodePassword` helper reads `~/.config/code-server/config.yaml` via SSH
 - Full e2e run: 52 PASS, 6 SKIP (PTY), 0 FAIL
 
+### Session 16 (2026-03-28)
+- Fixed browser-visible port proxy loads when the desktop bridge is unavailable:
+  - `frontend/static/sw.js`: proxy fetches now fall back to the server-side `/_proxy/{port}/...` reverse proxy if no `/desktop` client is found, instead of returning `503 No desktop window found`. The client match also accepts `/desktop/...` paths for robustness.
+  - `e2e/proxy_http_test.go`: added `TestHTTPProxyDirectBunRootLoad` to cover direct proxy navigation without any websocket bridge dependency; existing Bun refresh coverage still verifies repeated loads.
+- Verification:
+  - `cd frontend && npm run build` ✅
+  - `go run ./cmd/deploy --pass='max***'` ✅
+  - `GOCACHE=/tmp/go-cache WEBDESKTOPD_URL=http://localhost:19080 WEBDESKTOPD_SSH_ADDR=127.0.0.1:32233 WEBDESKTOPD_PASS='max***' go test ./e2e/... -timeout 120s` ✅
+
 ### Session 14 (2026-03-27)
 - Fixed HTTP proxy for WebSocket-heavy apps (VS Code server, etc.):
   - **WebSocket upgrade relay**: `handleHTTPProxy` now detects `Upgrade: websocket` header and calls `proxyWebSocket` instead of `httputil.ReverseProxy`; raw TCP dial to upstream + hijack browser conn + bidirectional `io.Copy` relay; the full WS handshake (101 Switching Protocols + frames) is forwarded verbatim
