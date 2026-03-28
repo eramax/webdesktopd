@@ -3,12 +3,15 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"strings"
 	"time"
 
@@ -63,6 +66,22 @@ func main() {
 	runRemoteIgnoreErr(client, "pkill -f webdesktopd || true")
 	time.Sleep(500 * time.Millisecond)
 
+	// Reuse a persistent JWT secret on the remote so browser tokens survive redeploys.
+	secretPath := "~/.config/webdesktopd/env"
+	jwtSecret := readRemoteJWTSecret(client, secretPath)
+	if jwtSecret == "" {
+		jwtSecret, err = generateJWTSecret()
+		if err != nil {
+			log.Fatalf("generate JWT secret: %v", err)
+		}
+		if err := writeRemoteJWTSecret(client, secretPath, jwtSecret); err != nil {
+			log.Fatalf("persist JWT secret: %v", err)
+		}
+		log.Printf("Created persistent JWT secret at %s", secretPath)
+	} else {
+		log.Printf("Loaded persistent JWT secret from %s", secretPath)
+	}
+
 	// Build binary for remote target.
 	binPath := "/tmp/webdesktopd-deploy"
 	log.Printf("Building for %s/%s...", goos, targetArch)
@@ -87,8 +106,8 @@ func main() {
 
 	// Start server in background.
 	startCmd := fmt.Sprintf(
-		"nohup %s -addr :%s -ssh-addr 127.0.0.1:22 > /tmp/webdesktopd.log 2>&1 & echo $!",
-		remotePath, *remotePort,
+		"nohup env JWT_SECRET=%s %s -addr :%s -ssh-addr 127.0.0.1:22 > /tmp/webdesktopd.log 2>&1 & echo $!",
+		shellQuote(jwtSecret), remotePath, *remotePort,
 	)
 	pid := strings.TrimSpace(runRemote(client, startCmd))
 	log.Printf("Server started (PID %s) on remote port %s", pid, *remotePort)
@@ -132,6 +151,59 @@ func runRemoteIgnoreErr(client *ssh.Client, cmd string) string {
 	defer sess.Close()
 	out, _ := sess.CombinedOutput(cmd)
 	return string(out)
+}
+
+func runRemoteOutput(client *ssh.Client, cmd string) (string, error) {
+	sess, err := client.NewSession()
+	if err != nil {
+		return "", err
+	}
+	defer sess.Close()
+	out, err := sess.CombinedOutput(cmd)
+	if err != nil {
+		return string(out), err
+	}
+	return string(out), nil
+}
+
+func readRemoteJWTSecret(client *ssh.Client, envPath string) string {
+	script := fmt.Sprintf("cat %s 2>/dev/null || true", shellQuote(envPath))
+	content := strings.TrimSpace(runRemoteIgnoreErr(client, script))
+	return parseJWTSecretEnv(content)
+}
+
+func writeRemoteJWTSecret(client *ssh.Client, envPath, jwtSecret string) error {
+	dir := path.Dir(envPath)
+	script := fmt.Sprintf(
+		"umask 077; mkdir -p %s; printf 'JWT_SECRET=%%s\\n' %s > %s; chmod 600 %s",
+		shellQuote(dir), shellQuote(jwtSecret), shellQuote(envPath), shellQuote(envPath),
+	)
+	if out, err := runRemoteOutput(client, script); err != nil {
+		return fmt.Errorf("write remote secret: %w (output: %s)", err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+func generateJWTSecret() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func parseJWTSecretEnv(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "JWT_SECRET=") {
+			return strings.TrimPrefix(line, "JWT_SECRET=")
+		}
+	}
+	return ""
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 // scpUpload uploads a local file to the remote via the SCP sink protocol.
