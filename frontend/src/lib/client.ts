@@ -25,6 +25,8 @@ export class WSClient {
   onOpen?: () => void;
   onClose?: () => void;
   onError?: (err: Event) => void;
+  /** Called when the server is reachable but rejects our token (e.g. after restart with new JWT secret). */
+  onAuthError?: () => void;
 
   constructor(token: string) {
     this.token = token;
@@ -52,7 +54,13 @@ export class WSClient {
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
 
+    // Track whether this specific socket ever successfully opened.
+    // If close fires before open, the server rejected the handshake (bad token
+    // or server down) rather than dropping an established connection.
+    let opened = false;
+
     ws.addEventListener('open', () => {
+      opened = true;
       this.onOpen?.();
     });
 
@@ -74,16 +82,32 @@ export class WSClient {
       }
     });
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', async () => {
       this.ws = null;
       this.onClose?.();
 
-      if (this.shouldReconnect) {
-        this.reconnectTimer = setTimeout(() => {
-          this.reconnectTimer = null;
-          this._openSocket();
-        }, RECONNECT_DELAY_MS);
+      if (!this.shouldReconnect) return;
+
+      if (!opened) {
+        // The handshake was rejected before the socket opened.
+        // If the server is actually up, our token is the problem.
+        try {
+          const resp = await fetch('/health', { signal: AbortSignal.timeout(3000) });
+          if (resp.ok) {
+            // Server is reachable → it rejected our token → stop retrying.
+            this.shouldReconnect = false;
+            this.onAuthError?.();
+            return;
+          }
+        } catch {
+          // Server not reachable yet — fall through and retry normally.
+        }
       }
+
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        this._openSocket();
+      }, RECONNECT_DELAY_MS);
     });
 
     ws.addEventListener('error', (err: Event) => {

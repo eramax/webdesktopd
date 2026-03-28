@@ -241,6 +241,14 @@
 
   let connected = $derived(session.connected);
   let effectiveHomeDir = $derived(session.homeDir ?? '/');
+
+  // Redirect to login when the server rejects our token (e.g. restart with new JWT secret).
+  $effect(() => {
+    if (session.authError) {
+      session.logout();
+      goto('/');
+    }
+  });
   let appVersion = $state<string | null>(null);
 
   fetch('/health')

@@ -35,6 +35,8 @@ class SessionStore {
 
   /** Current wallpaper CSS value. */
   wallpaper = $state<string>('');
+  /** True when the server is up but rejected our token (e.g. restart with new JWT secret). */
+  authError = $state(false);
 
   private _nextID = 1;
 
@@ -48,6 +50,9 @@ class SessionStore {
     };
     ws.onClose = () => {
       this.connected = false;
+    };
+    ws.onAuthError = () => {
+      this.authError = true;
     };
     this.client = ws;
   }
@@ -67,6 +72,7 @@ class SessionStore {
     this.proxyChannels = [];
     this.activeProxyChanID = null;
     this.wallpaper = '';
+    this.authError = false;
     this._nextID = 1;
     document.cookie = 'wdd_token=; path=/; max-age=0';
   }
