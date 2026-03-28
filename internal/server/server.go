@@ -841,24 +841,8 @@ func (s *Server) handleHTTPProxy(w http.ResponseWriter, r *http.Request) {
 				resp.Header.Set("Location", "/_proxy/"+port+locURL.String())
 			}
 		}
-		// Inject <base> tag into HTML responses so relative asset URLs resolve correctly.
-		if strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-			body, err2 := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if err2 != nil {
-				return err2
-			}
-			baseTag := `<base href="/_proxy/` + port + `/">`
-			bodyStr := string(body)
-			if idx := strings.Index(strings.ToLower(bodyStr), "<head>"); idx >= 0 {
-				bodyStr = bodyStr[:idx+6] + baseTag + bodyStr[idx+6:]
-			} else {
-				bodyStr = baseTag + bodyStr
-			}
-			resp.Body = io.NopCloser(strings.NewReader(bodyStr))
-			resp.ContentLength = int64(len(bodyStr))
-			resp.Header.Del("Transfer-Encoding")
-		}
+		// Leave the upstream body untouched. We only rewrite headers here so the
+		// proxy stays stable for refreshes and login flows.
 		return nil
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {

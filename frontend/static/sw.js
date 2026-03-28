@@ -22,7 +22,15 @@ self.addEventListener('fetch', (event) => {
 
 async function handleProxyRequest(request, port, path) {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  if (clients.length === 0) {
+  const desktopClient = clients.find((client) => {
+    try {
+      return new URL(client.url).pathname === '/desktop';
+    } catch {
+      return false;
+    }
+  });
+
+  if (!desktopClient) {
     return new Response('No desktop window found. Open webdesktopd first.', { status: 503 });
   }
 
@@ -75,8 +83,8 @@ async function handleProxyRequest(request, port, path) {
       resolve(new Response(body, { status, headers: new Headers(headers) }));
     };
 
-    // Send to the first available desktop window.
-    clients[0].postMessage(
+    // Send the request to the desktop window that owns the WebSocket bridge.
+    desktopClient.postMessage(
       { type: 'proxy-http-request', port, requestBytes },
       [port2]
     );

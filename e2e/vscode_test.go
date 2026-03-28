@@ -9,46 +9,18 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	gossh "golang.org/x/crypto/ssh"
 )
 
 const vsCodePort = 8080
 
-// readVSCodePassword reads the code-server password from the remote host's
-// config file via SSH. Skips the test if SSH is unavailable or the config
-// doesn't exist.
+// readVSCodePassword returns the code-server password.
+// The remote setup uses the same password as SSH.
 func readVSCodePassword(t *testing.T) string {
 	t.Helper()
-	if cfg.SSHAddr == "" {
-		t.Skip("WEBDESKTOPD_SSH_ADDR not set — cannot read code-server config")
+	if cfg.Pass == "" {
+		t.Skip("WEBDESKTOPD_PASS not set")
 	}
-	sshCfg := &gossh.ClientConfig{
-		User:            cfg.User,
-		Auth:            []gossh.AuthMethod{gossh.Password(cfg.Pass)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
-	}
-	client, err := gossh.Dial("tcp", cfg.SSHAddr, sshCfg)
-	if err != nil {
-		t.Skipf("SSH dial %q: %v", cfg.SSHAddr, err)
-	}
-	defer client.Close()
-
-	session, err := client.NewSession()
-	if err != nil {
-		t.Skipf("SSH session: %v", err)
-	}
-	defer session.Close()
-
-	out, err := session.Output(
-		`grep -E "^password:" ~/.config/code-server/config.yaml 2>/dev/null` +
-			` | awk '{print $2}' | tr -d '"'`)
-	password := strings.TrimSpace(string(out))
-	if err != nil || password == "" {
-		t.Skip("code-server config not found or has no password entry")
-	}
-	return password
+	return cfg.Pass
 }
 
 // vsCodeClient builds an http.Client with a cookie jar pre-seeded with the
@@ -173,6 +145,46 @@ func TestVSCodeLoginSucceeds(t *testing.T) {
 	}
 
 	t.Log("✓ code-server login succeeded; workbench page loaded via proxy")
+}
+
+// TestVSCodeWorkbenchRefreshAfterLogin verifies that reloading the workbench
+// after a successful login keeps the session alive.
+func TestVSCodeWorkbenchRefreshAfterLogin(t *testing.T) {
+	token := mustAuth(t, cfg.User, cfg.Pass)
+	client := vsCodeClient(t, token)
+	requireVSCode(t, client)
+
+	vsPassword := readVSCodePassword(t)
+	loginURL := fmt.Sprintf("%s/_proxy/%d/login", cfg.BaseURL, vsCodePort)
+
+	resp, err := client.PostForm(loginURL, url.Values{
+		"password": {vsPassword},
+		"base":     {"."},
+		"href":     {loginURL},
+	})
+	if err != nil {
+		t.Fatalf("POST login: %v", err)
+	}
+	resp.Body.Close()
+
+	// Simulate a browser refresh: issue a fresh GET to the workbench root.
+	refreshURL := fmt.Sprintf("%s/_proxy/%d/", cfg.BaseURL, vsCodePort)
+	refreshResp, err := client.Get(refreshURL)
+	if err != nil {
+		t.Fatalf("GET refresh: %v", err)
+	}
+	defer refreshResp.Body.Close()
+
+	body, _ := io.ReadAll(refreshResp.Body)
+	bodyStr := string(body)
+
+	if refreshResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on refresh, got %d\nbody: %.500s", refreshResp.StatusCode, bodyStr)
+	}
+	if !strings.Contains(bodyStr, "codeServerVersion") {
+		t.Fatalf("expected workbench markers after refresh, got:\n%.500s", bodyStr)
+	}
+	t.Log("✓ code-server workbench remains usable after refresh")
 }
 
 // TestVSCodeUnauthRedirectsToLogin verifies that accessing the workbench root

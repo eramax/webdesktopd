@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -112,6 +113,34 @@ func TestHTTPProxyStripsWddToken(t *testing.T) {
 		t.Errorf("expected my_app_session to pass through, got: %q", body.Cookies)
 	}
 	t.Log("✓ wdd_token stripped; other cookies forwarded to upstream")
+}
+
+// TestHTTPProxyRefreshBunRoot verifies that refreshing a proxied page returns
+// the same content on repeated requests.
+func TestHTTPProxyRefreshBunRoot(t *testing.T) {
+	srv, cleanup := startRemoteBunServer(t)
+	defer cleanup()
+
+	token := mustAuth(t, cfg.User, cfg.Pass)
+
+	first := proxyGet(t, token, srv.port, "/")
+	body1, _ := io.ReadAll(first.Body)
+	first.Body.Close()
+	if first.StatusCode != http.StatusOK {
+		t.Fatalf("first GET: expected 200, got %d", first.StatusCode)
+	}
+
+	second := proxyGet(t, token, srv.port, "/")
+	body2, _ := io.ReadAll(second.Body)
+	second.Body.Close()
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("second GET: expected 200, got %d", second.StatusCode)
+	}
+
+	if !strings.Contains(string(body1), "proxy-test-ok") || !strings.Contains(string(body2), "proxy-test-ok") {
+		t.Fatalf("expected proxy-test-ok in both responses:\nfirst: %.300s\nsecond: %.300s", body1, body2)
+	}
+	t.Log("✓ proxied bun root remains loadable across refreshes")
 }
 
 // TestHTTPProxyWebSocketRelay verifies that WebSocket upgrade requests are

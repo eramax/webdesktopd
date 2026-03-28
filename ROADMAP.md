@@ -232,6 +232,19 @@
   - `GOCACHE=/tmp/go-cache WEBDESKTOPD_TEST_PTY=1 go test ./internal/... -count=1` ✅
   - `WEBDESKTOPD_URL=http://localhost:19080 WEBDESKTOPD_SSH_ADDR=127.0.0.1:32233 WEBDESKTOPD_PASS='max***' go test ./e2e/... -timeout 120s` ✅
   - Deployed to `build-server` via `go run ./cmd/deploy --pass='max***'` and tunneled through `localhost:19080`
+
+### Session 12 (2026-03-28)
+- Fixed HTTP proxy refresh stability:
+  - `frontend/static/sw.js`: service worker now routes proxy fetches to the `/desktop` window only, instead of the first window client. This prevents refresh/open-external requests from being delivered to the wrong tab.
+  - `internal/server/server.go`: removed the HTML body rewrite from the HTTP proxy response path. Header rewrites for redirects and iframe embedding remain, but the response body is no longer mutated in the reverse proxy.
+  - `e2e/proxy_bun_test.go`: bun helper now waits for actual HTTP readiness, not just a log marker.
+  - `e2e/proxy_http_test.go`: added a bun root refresh regression.
+  - `e2e/vscode_test.go`: code-server password now comes from the shared SSH password and a refresh-after-login regression was added.
+- Verification:
+  - `cd frontend && npm run build` ✅
+  - `GOCACHE=/tmp/go-cache WEBDESKTOPD_TEST_PTY=1 go test ./internal/... -count=1` ✅
+  - `WEBDESKTOPD_URL=http://localhost:19080 WEBDESKTOPD_SSH_ADDR=127.0.0.1:32233 WEBDESKTOPD_PASS='max***' go test ./e2e/... -timeout 120s` ✅
+  - Deployed to `build-server` via `go run ./cmd/deploy --pass='max***'`
 - Full e2e run: 45 PASS, 6 SKIP (PTY), 0 FAIL
 
 ### Session 11 (2026-03-27)

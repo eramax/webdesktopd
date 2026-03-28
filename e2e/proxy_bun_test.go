@@ -179,6 +179,31 @@ func startRemoteBunServer(t *testing.T) (*remoteBunServer, func()) {
 		t.Skipf("bun server did not report ready within 3s on port %d", port)
 	}
 
+	// Give the TCP listener a moment to settle and verify it actually accepts
+	// HTTP requests, not just that bun printed its ready marker.
+	httpReady := false
+	for i := 0; i < 10; i++ {
+		time.Sleep(200 * time.Millisecond)
+		checkSession, err := client.NewSession()
+		if err != nil {
+			break
+		}
+		if err := checkSession.Run(fmt.Sprintf("curl -fsS http://127.0.0.1:%d/api >/dev/null", port)); err == nil {
+			httpReady = true
+			checkSession.Close()
+			break
+		}
+		checkSession.Close()
+	}
+	if !httpReady {
+		if killSession, err2 := client.NewSession(); err2 == nil {
+			killSession.Run("kill " + pid) //nolint:errcheck
+			killSession.Close()
+		}
+		client.Close()
+		t.Skipf("bun server was not HTTP-ready on port %d", port)
+	}
+
 	srv := &remoteBunServer{client: client, pid: pid, scriptPath: scriptPath, port: port}
 	cleanup := func() {
 		if killSession, err := srv.client.NewSession(); err == nil {
@@ -380,7 +405,11 @@ func TestProxyBunWebServerMultipleRequests(t *testing.T) {
 	target := fmt.Sprintf("127.0.0.1:%d", srv.port)
 
 	// Three sequential requests on different channels.
-	type result struct{ chanID uint16; path string; resp string }
+	type result struct {
+		chanID uint16
+		path   string
+		resp   string
+	}
 	results := []result{
 		{62, "/", ""},
 		{63, "/api", ""},
@@ -395,10 +424,10 @@ func TestProxyBunWebServerMultipleRequests(t *testing.T) {
 	for _, r := range results {
 		if !strings.Contains(r.resp, "200 OK") {
 			preview := r.resp
-		if len(preview) > 200 {
-			preview = preview[:200]
-		}
-		t.Errorf("chanID %d GET %s: expected 200 OK, got: %s",
+			if len(preview) > 200 {
+				preview = preview[:200]
+			}
+			t.Errorf("chanID %d GET %s: expected 200 OK, got: %s",
 				r.chanID, r.path, preview)
 		}
 	}
@@ -408,4 +437,3 @@ func TestProxyBunWebServerMultipleRequests(t *testing.T) {
 	}
 	t.Logf("✓ 3 independent proxy channels each loaded content from bun server")
 }
-
