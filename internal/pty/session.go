@@ -85,6 +85,7 @@ func lookupLoginShell(username string) string {
 
 // New spawns a shell as the given Unix user in a PTY.
 // shell defaults to the user's login shell from /etc/passwd (or /bin/sh).
+// The shell is started interactively so per-user startup files like .bashrc run.
 // cwd defaults to the user's home directory.
 func New(chanID uint16, username, shell, cwd string) (*Session, error) {
 	u, err := user.Lookup(username)
@@ -121,7 +122,9 @@ func New(chanID uint16, username, shell, cwd string) (*Session, error) {
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	}
 
-	cmd := exec.Command(shell, "--login")
+	// Start an interactive shell so per-user startup files such as .bashrc
+	// are loaded for new terminals.
+	cmd := exec.Command(shell, "-i")
 	cmd.Env = env
 	cmd.Dir = cwd
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

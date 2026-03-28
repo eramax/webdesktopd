@@ -250,3 +250,23 @@ func TestHubClosedSendReturnsError(t *testing.T) {
 	_ = clientConn
 	time.Sleep(100 * time.Millisecond)
 }
+
+// TestHubCloseDoesNotCloseHandlers verifies that closing the WebSocket hub does
+// not terminate channel handlers. Disconnects should only detach the transport;
+// PTY sessions are expected to keep running so reconnects can reattach.
+func TestHubCloseDoesNotCloseHandlers(t *testing.T) {
+	handler := &mockHandler{}
+
+	clientConn := testPair(t, func(conn *websocket.Conn) {
+		h := New(conn)
+		h.Register(1, handler)
+		h.Close()
+	})
+	_ = clientConn
+
+	time.Sleep(100 * time.Millisecond)
+
+	if handler.closed.Load() {
+		t.Fatal("handler.Close() was called when the hub closed")
+	}
+}

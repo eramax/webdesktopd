@@ -179,6 +179,53 @@ func TestPTYRingBufferReconnect(t *testing.T) {
 	c2.sendJSON(ftClosePTY, 0, map[string]any{"channel": chanID})
 }
 
+// TestPTYSurvivesReconnect verifies that a running command keeps executing
+// after the browser disconnects and that the terminal still accepts input
+// after reconnect.
+func TestPTYSurvivesReconnect(t *testing.T) {
+	token := mustAuth(t, cfg.User, cfg.Pass)
+	chanID := uint16(31)
+
+	pre := dial(t, token)
+	pre.sendJSON(ftClosePTY, 0, map[string]any{"channel": chanID})
+	pre.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	requirePTY(t)
+
+	c1 := dial(t, token)
+	c1.syncSession(2 * time.Second)
+	c1.openPTY(chanID, "/bin/bash", "")
+	time.Sleep(800 * time.Millisecond)
+
+	marker := fmt.Sprintf("RECONNECT_OK_%d", time.Now().UnixNano())
+	c1.sendInput(chanID, "sleep 3; echo "+marker+"\n")
+	time.Sleep(200 * time.Millisecond)
+	c1.Close()
+
+	// Reconnect before the command finishes so we exercise the live PTY path.
+	c2 := dial(t, token)
+	ch := c2.subscribe(chanID)
+	defer c2.unsubscribe(chanID, ch)
+	c2.syncSession(2 * time.Second)
+	c2.openPTY(chanID, "/bin/bash", "")
+
+	raw, found := c2.collectUntil(ch, func(f wsFrame) bool {
+		return strings.Contains(printableE2E(f.Payload), marker)
+	}, 6*time.Second)
+	if !found {
+		t.Fatalf("running command did not survive reconnect; marker %q not found\nGot: %q", marker, printableE2E(raw))
+	}
+
+	c2.sendInput(chanID, "echo AFTER_RECONNECT\n")
+	out, ok := c2.waitForOutput(chanID, "AFTER_RECONNECT", 5*time.Second)
+	if !ok {
+		t.Fatalf("terminal did not accept input after reconnect; got: %q", out)
+	}
+
+	c2.sendJSON(ftClosePTY, 0, map[string]any{"channel": chanID})
+}
+
 // TestPTYResize verifies that FramePTYResize (0x02) is accepted without error.
 func TestPTYResize(t *testing.T) {
 	token := mustAuth(t, cfg.User, cfg.Pass)

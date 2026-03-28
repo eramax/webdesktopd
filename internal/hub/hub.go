@@ -147,19 +147,12 @@ func (h *Hub) Close() {
 	h.closeOnce.Do(func() {
 		close(h.done)
 		h.conn.Close()
-
-		// Close all registered handlers.
+		// Keep registered handlers alive across disconnects.
+		// The server detaches/re-attaches PTY and proxy sessions separately so
+		// they can continue running while the WebSocket is gone.
 		h.mu.Lock()
-		handlers := make(map[uint16]ChannelHandler, len(h.handlers))
-		for k, v := range h.handlers {
-			handlers[k] = v
-		}
 		h.handlers = make(map[uint16]ChannelHandler)
 		h.mu.Unlock()
-
-		for _, handler := range handlers {
-			handler.Close()
-		}
 	})
 }
 

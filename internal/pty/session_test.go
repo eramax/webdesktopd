@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/user"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -164,4 +165,58 @@ func TestRingBufferIntegration(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Errorf("ring buffer did not contain expected output; got: %q", session.ring.Bytes())
+}
+
+// TestInteractiveShellSourcesBashrc verifies that a new PTY starts an
+// interactive shell, so bash reads .bashrc on startup.
+func TestInteractiveShellSourcesBashrc(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("PTY test only runs on Linux")
+	}
+
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("current user: %v", err)
+	}
+
+	isRoot := os.Getenv("WEBDESKTOPD_TEST_PTY") != "" || currentUser.Uid == "0"
+	if !isRoot {
+		t.Skip("skipping PTY bashrc test: requires root or WEBDESKTOPD_TEST_PTY env var")
+	}
+
+	tmpHome := t.TempDir()
+	marker := "BASHRC_LOADED_TEST"
+	if err := os.WriteFile(filepath.Join(tmpHome, ".bashrc"), []byte("echo "+marker+"\n"), 0o644); err != nil {
+		t.Fatalf("write .bashrc: %v", err)
+	}
+
+	wrapper := filepath.Join(tmpHome, "bash-wrapper.sh")
+	script := "#!/bin/sh\nexport HOME=\"" + tmpHome + "\"\nexec /bin/bash \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatalf("write wrapper: %v", err)
+	}
+
+	sender := newMockSender(32)
+	session, err := New(3, currentUser.Username, wrapper, currentUser.HomeDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer session.Close()
+
+	session.Attach(sender)
+
+	deadline := time.Now().Add(5 * time.Second)
+	var output []byte
+	for time.Now().Before(deadline) {
+		select {
+		case f := <-sender.frames:
+			output = append(output, f.Payload...)
+			if containsBytes(output, []byte(marker)) {
+				return
+			}
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	t.Fatalf(".bashrc marker not observed; got: %q", output)
 }

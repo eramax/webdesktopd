@@ -216,8 +216,22 @@
   - `controlHandler.handlePortScan`: calls scanner, responds with `FramePortScanResp`
   - `PortProxy.svelte` rewritten: scans on mount + polls every 4 s; shows port badge + process name + cmdline for each listener; click to open proxy (reuses existing channel if already open); active proxy sessions listed separately at bottom; no manual port input needed
   - Fixed HTTP proxy iframe: `<base href="/_proxy/{port}/">` injected into HTML responses (fixes relative asset URLs); `Location` headers rewritten to stay within proxy path; `?_t=JWT` in iframe URL as reliable auth (cookie fallback kept)
-  - e2e `TestPortScanDiscoversBunServer`: starts bun, scan, verify port+process appear
-  - e2e `TestPortScanOpenAndLoadProxy`: scan → open proxy → load HTML via WS channel
+- e2e `TestPortScanDiscoversBunServer`: starts bun, scan, verify port+process appear
+- e2e `TestPortScanOpenAndLoadProxy`: scan → open proxy → load HTML via WS channel
+
+### Session 11 (2026-03-28)
+- Fixed terminal reconnect and startup behavior:
+  - `internal/hub/hub.go`: hub disconnect no longer calls `Close()` on PTY/proxy handlers, so a browser logout/disconnect only detaches the transport.
+  - `internal/pty/session.go`: new shells now start with `-i` instead of `--login`, so interactive terminals load user startup files like `.bashrc`.
+  - Added regressions:
+    - `internal/hub/hub_test.go`: disconnect must not close registered handlers.
+    - `internal/pty/session_test.go`: interactive PTY startup sources `.bashrc`.
+    - `e2e/pty_test.go`: reconnect preserves a running command and still accepts input after reconnect.
+- Verification:
+  - `cd frontend && npm run build` ✅
+  - `GOCACHE=/tmp/go-cache WEBDESKTOPD_TEST_PTY=1 go test ./internal/... -count=1` ✅
+  - `WEBDESKTOPD_URL=http://localhost:19080 WEBDESKTOPD_SSH_ADDR=127.0.0.1:32233 WEBDESKTOPD_PASS='max***' go test ./e2e/... -timeout 120s` ✅
+  - Deployed to `build-server` via `go run ./cmd/deploy --pass='max***'` and tunneled through `localhost:19080`
 - Full e2e run: 45 PASS, 6 SKIP (PTY), 0 FAIL
 
 ### Session 11 (2026-03-27)
