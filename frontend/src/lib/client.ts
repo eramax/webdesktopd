@@ -53,8 +53,10 @@ export class WSClient {
     const ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
     this.ws = ws;
+    let opened = false;
 
     ws.addEventListener('open', () => {
+      opened = true;
       this.onOpen?.();
     });
 
@@ -76,15 +78,33 @@ export class WSClient {
       }
     });
 
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', async () => {
       this.ws = null;
       this.onClose?.();
 
       if (!this.shouldReconnect) return;
 
+      if (!opened) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 3000);
+          const resp = await fetch(`/validate?token=${encodeURIComponent(this.token)}`, {
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          if (resp.status === 401) {
+            this.shouldReconnect = false;
+            this.onAuthError?.();
+            return;
+          }
+        } catch {
+          // Server not reachable yet or validation timed out — retry normally.
+        }
+      }
+
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
-        this._validateAndReconnect();
+        this._openSocket();
       }, RECONNECT_DELAY_MS);
     });
 
@@ -92,32 +112,6 @@ export class WSClient {
       this.onError?.(err);
       // The 'close' event will fire after an error, handling reconnect there.
     });
-  }
-
-  /**
-   * Before reconnecting, validate the token against the server.
-   * If /validate returns 401, the server is up but our token is invalid → auth error.
-   * If the fetch fails or returns anything else, proceed with reconnect.
-   */
-  private async _validateAndReconnect(): Promise<void> {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-      const resp = await fetch(`/validate?token=${encodeURIComponent(this.token)}`, {
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (resp.status === 401) {
-        this.shouldReconnect = false;
-        this.onAuthError?.();
-        return;
-      }
-    } catch {
-      // Server not reachable yet or request aborted — proceed with reconnect.
-    }
-    if (this.shouldReconnect) {
-      this._openSocket();
-    }
   }
 
   /**
