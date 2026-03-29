@@ -261,7 +261,7 @@
                   placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"
                 ></textarea>
                 <p class="mt-1 text-xs text-zinc-500">
-                  You can pick a file or paste the key here. If remember me is enabled, the selected key is stored encrypted in this browser.
+                  You can pick a file or paste the key here. If remember me is enabled, the selected key is stored in this browser's IndexedDB.
                 </p>
               </div>
             </div>

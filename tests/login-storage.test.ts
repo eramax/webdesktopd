@@ -1,9 +1,9 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decryptSecretPayload, encryptSecretPayload } from '../frontend/src/lib/login-storage';
+import { decodeRememberedLogin, encodeRememberedLogin } from '../frontend/src/lib/login-storage';
 
-describe('login storage crypto', () => {
-  test('encrypts and decrypts the secret payload without losing data', async () => {
+describe('login storage', () => {
+  test('stores and restores the remembered payload without transformation', () => {
     const payload = {
       username: 'alice',
       authMode: 'privateKey' as const,
@@ -11,12 +11,25 @@ describe('login storage crypto', () => {
       keyLabel: 'id_ed25519'
     };
 
-    const record = await encryptSecretPayload(payload);
+    const record = encodeRememberedLogin(payload);
 
-    assert.ok(!record.ciphertext.includes(payload.secret));
     assert.equal(record.version, 1);
+    assert.equal(record.id, 'current');
 
-    const restored = await decryptSecretPayload(record);
+    const restored = decodeRememberedLogin(record);
     assert.deepEqual(restored, payload);
+  });
+
+  test('rejects incompatible stored records', () => {
+    assert.equal(
+      decodeRememberedLogin({
+        id: 'current',
+        version: 1,
+        username: 'alice',
+        authMode: 'privateKey',
+        ciphertext: 'not-supported-anymore'
+      }),
+      null
+    );
   });
 });
