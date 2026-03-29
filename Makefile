@@ -1,6 +1,13 @@
-.PHONY: all build frontend backend test clean run dev-backend dev-frontend
+.PHONY: all build frontend backend test clean run dev-backend dev-frontend deploy tunnel
 
 all: build
+
+HOST ?= 127.0.0.1
+SSH_PORT ?= 32233
+REMOTE_USER ?= abb
+REMOTE_PORT ?= 18080
+LOCAL_PORT ?= 19080
+PASS ?=
 
 # Full production build: frontend then embed into Go binary
 build: frontend backend
@@ -40,6 +47,16 @@ dev-backend:
 # Development mode: run Vite dev server (proxies /auth and /ws to :8080)
 dev-frontend:
 	cd frontend && bun run dev
+
+# Deploy the current build to the remote host.
+deploy: build
+	@test -n "$(PASS)" || (echo "PASS is required: make deploy PASS=..." && exit 1)
+	go run ./cmd/deploy --host "$(HOST)" --port "$(SSH_PORT)" --user "$(REMOTE_USER)" --pass "$(PASS)" --remote-port "$(REMOTE_PORT)"
+
+# Open a local SSH tunnel to the deployed remote server.
+tunnel:
+	@test -n "$(PASS)" || (echo "PASS is required: make tunnel PASS=..." && exit 1)
+	go run ./cmd/tunnel --host "$(HOST)" --port "$(SSH_PORT)" --user "$(REMOTE_USER)" --pass "$(PASS)" --local "$(LOCAL_PORT)" --remote "$(REMOTE_PORT)"
 
 clean:
 	rm -f webdesktopd

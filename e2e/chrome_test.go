@@ -339,28 +339,6 @@ func (p *chromePage) evalString(t *testing.T, expr string) string {
 	return fmt.Sprint(parsed.Result.Value)
 }
 
-func (p *chromePage) setOffline(t *testing.T) {
-	t.Helper()
-	p.call(t, "Network.emulateNetworkConditions", map[string]any{
-		"offline":            true,
-		"latency":            0,
-		"downloadThroughput": 0,
-		"uploadThroughput":   0,
-		"connectionType":     "none",
-	})
-}
-
-func (p *chromePage) setOnline(t *testing.T) {
-	t.Helper()
-	p.call(t, "Network.emulateNetworkConditions", map[string]any{
-		"offline":            false,
-		"latency":            0,
-		"downloadThroughput": -1,
-		"uploadThroughput":   -1,
-		"connectionType":     "wifi",
-	})
-}
-
 func (p *chromePage) fillInput(t *testing.T, selector, value string) {
 	t.Helper()
 	script := fmt.Sprintf(`(() => {

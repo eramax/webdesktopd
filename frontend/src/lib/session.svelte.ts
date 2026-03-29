@@ -51,6 +51,9 @@ class SessionStore {
     ws.onClose = () => {
       this.connected = false;
     };
+    ws.onBackendActivity = () => {
+      this.connected = true;
+    };
     ws.onAuthError = () => {
       this.authError = true;
     };

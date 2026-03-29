@@ -3,9 +3,14 @@ import { encodeFrame, decodeFrame, FrameType, encodeJSON, type Frame } from './p
 export type ChannelHandler = (frame: Frame) => void;
 
 const RECONNECT_DELAY_MS = 2000;
+const HEARTBEAT_INTERVAL_MS = 3000;
+const HEARTBEAT_TIMEOUT_MS = 5000;
 
 export class WSClient {
   private ws: WebSocket | null = null;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatTimeout: ReturnType<typeof setTimeout> | null = null;
+  private awaitingPong = false;
   /**
    * Primary per-channel handlers (one per chanID).
    * chanID 0 is special: it also delivers to all broadcast listeners.
@@ -25,6 +30,7 @@ export class WSClient {
   onOpen?: () => void;
   onClose?: () => void;
   onError?: (err: Event) => void;
+  onBackendActivity?: () => void;
   /** Called when the server is reachable but rejects our token (e.g. after restart with new JWT secret). */
   onAuthError?: () => void;
 
@@ -39,6 +45,53 @@ export class WSClient {
   connect(): void {
     this.shouldReconnect = true;
     this._openSocket();
+  }
+
+  private _startHeartbeat(): void {
+    this._stopHeartbeat();
+    this.awaitingPong = false;
+    this.heartbeatTimer = setTimeout(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      this.awaitingPong = true;
+      this.sendJSON(FrameType.Ping, 0, {});
+
+      this.heartbeatTimeout = setTimeout(() => {
+        if (!this.awaitingPong) return;
+        this.awaitingPong = false;
+        this._markDisconnected();
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.close();
+        }
+      }, HEARTBEAT_TIMEOUT_MS);
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private _stopHeartbeat(): void {
+    if (this.heartbeatTimer !== null) {
+      clearTimeout(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.heartbeatTimeout !== null) {
+      clearTimeout(this.heartbeatTimeout);
+      this.heartbeatTimeout = null;
+    }
+    this.awaitingPong = false;
+  }
+
+  private _handlePong(): void {
+    this.awaitingPong = false;
+    if (this.heartbeatTimeout !== null) {
+      clearTimeout(this.heartbeatTimeout);
+      this.heartbeatTimeout = null;
+    }
+    this.onBackendActivity?.();
+    this._startHeartbeat();
+  }
+
+  private _markDisconnected(): void {
+    this.onClose?.();
   }
 
   private _openSocket(): void {
@@ -58,11 +111,18 @@ export class WSClient {
     ws.addEventListener('open', () => {
       opened = true;
       this.onOpen?.();
+      this._startHeartbeat();
     });
 
     ws.addEventListener('message', (event: MessageEvent<ArrayBuffer>) => {
       try {
         const frame = decodeFrame(event.data);
+        if (frame.type === FrameType.Pong) {
+          this._handlePong();
+          return;
+        }
+        this.onBackendActivity?.();
+        this._startHeartbeat();
         if (frame.chanID === 0) {
           // Deliver to the primary handler (if any) then all broadcast listeners
           this.handlers.get(0)?.(frame);
@@ -80,6 +140,8 @@ export class WSClient {
 
     ws.addEventListener('close', async () => {
       this.ws = null;
+      this._stopHeartbeat();
+      this._markDisconnected();
       this.onClose?.();
 
       if (!this.shouldReconnect) return;
@@ -129,6 +191,8 @@ export class WSClient {
       this.ws.close();
       this.ws = null;
     }
+
+    this._stopHeartbeat();
   }
 
   /**
