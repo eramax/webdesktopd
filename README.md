@@ -10,6 +10,7 @@
 - Desktop shell with windows, docking, and saved UI state
 - System stats panel for CPU, memory, disk, network, uptime, and processes
 - SSH password or SSH key authentication against the local `sshd`
+- Login form with `Remember me` support that restores the username and secret from browser IndexedDB
 - Debian/Ubuntu `.deb` and Alpine `.apk` release packages
 
 ## Install
@@ -42,3 +43,6 @@
 - `make dev-frontend` starts the Vite dev server on `:5173`
 - `make test` runs Go unit tests
 - `make e2e` runs browser and server integration tests
+- `make build` builds the frontend and backend
+- `make deploy PASS=... REMOTE_USER=abb` builds and deploys to the remote host
+- `make tunnel PASS=... REMOTE_USER=abb` opens an SSH tunnel to the remote instance
